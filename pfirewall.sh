@@ -25,8 +25,8 @@ add_flag "l" "list" "List current firewall rules/configuration and exit" bool
 add_flag "V" "version" "Show app version and exit" bool
 add_flag "atp:HIDDEN" "install" "Add this script to the system path and exits" bool
 add_flag "t:HIDDEN" "test" "DEBUGGING TOOL" bool # runs function run_test() and exits
-add_flag  "upd:HIDDEN" "update" "Update this script to the newest version" bool
-add_flag  "fu:HIDDEN" "force-update" "Force the update even if its in the same version" bool
+add_flag "upd:HIDDEN" "update" "Update this script to the newest version" bool
+add_flag "fu:HIDDEN" "force-update" "Force the update even if its in the same version" bool
 
 #ignores
 add_flag "idp:HIDDEN" "ignore-default-ports" "Do NOT use default ports" bool
@@ -52,6 +52,7 @@ LISTING=false # list current rules and exit
 ADD_TO_PATH=false # add this script to the system path and exit
 UPDATE=false # update this script to the newest version
 FORCE_UPDATE=false # force update even if its the same version
+TEST_RUN=false
 
 FLUSH_ZONES=true # flush all rules added from this script (default: true)
 
@@ -109,6 +110,7 @@ if hasFlag "d"; then DRY=true; fi
 if hasFlag "l"; then LISTING=true; fi
 if hasFlag "v"; then VERBOSE=true; fi
 if hasFlag "V"; then VERBOSE=true; SILENT=false; fi
+if hasFlag "t"; then TEST_RUN=true; fi
 if hasFlag "fu"; then FORCE_UPDATE=true; fi
 if hasFlag "nf"; then FLUSH_ZONES=false; fi
 if hasFlag "ifs"; then IGNORE_FAILSAFE=true; fi
@@ -487,12 +489,12 @@ function firewalld_list_configuration() {
     # firewall-cmd --zone=trusted --list-sources
     # firewall-cmd --permanent --zone=trusted --get-target
 
-    echo "=~= $(colorir "verde" "CURRENT $TRUST_ZONE_NAME (allow) ZONE") =~="
+    echo "=~= $(colorir "verde" "CURRENT $TRUST_ZONE_NAME ZONE (allow, if invalid then it doesnt exist)") =~="
     firewall-cmd --zone=$TRUST_ZONE_NAME --list-all | egrep "target|sources"
     # firewall-cmd --zone=$TRUST_ZONE_NAME --list-sources egrep "target|sources|ports"
     # firewall-cmd --permanent --zone=$TRUST_ZONE_NAME --get-target
 
-    echo "=~= $(colorir "vermelho" "CURRENT $DROP_ZONE_NAME (port drop) ZONE") =~="
+    echo "=~= $(colorir "vermelho" "CURRENT $DROP_ZONE_NAME ZONE (port drop, if invalid then it doesnt exist)") =~="
     firewall-cmd --zone=$DROP_ZONE_NAME --list-all | egrep "target| ports"
     # firewall-cmd --zone=$DROP_ZONE_NAME --list-ports | egrep "target|sources|ports"
     # firewall-cmd --permanent --zone=$DROP_ZONE_NAME --get-target
