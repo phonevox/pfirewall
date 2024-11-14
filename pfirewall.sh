@@ -3,7 +3,7 @@
 FULL_SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 CURRDIR="$(dirname "$FULL_SCRIPT_PATH")"
 SCRIPT_NAME="$(basename "$FULL_SCRIPT_PATH")"
-APP_VERSION="v0.1.3";
+APP_VERSION="v0.1.4";
 REPO_URL="https://github.com/phonevox/pfirewall"
 ZIP_URL="$REPO_URL/archive/refs/heads/main.zip"
 
