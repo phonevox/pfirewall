@@ -3,9 +3,13 @@
 FULL_SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 CURRDIR="$(dirname "$FULL_SCRIPT_PATH")"
 SCRIPT_NAME="$(basename "$FULL_SCRIPT_PATH")"
-APP_VERSION="v0.1.4";
-REPO_URL="https://github.com/phonevox/pfirewall"
+
+# Application infor
+REPO_OWNER="phonevox"
+REPO_NAME="pfirewall"
+REPO_URL="https://github.com/$REPO_OWNER/$REPO_NAME"
 ZIP_URL="$REPO_URL/archive/refs/heads/main.zip"
+APP_VERSION="v0.2.0" # honestly, I dont know how to do this better
 
 source ./lib/useful.sh
 source ./lib/easyflags.sh
@@ -29,7 +33,6 @@ add_flag "idp:HIDDEN" "ignore-default-ports" "Do NOT use default ports" bool
 add_flag "ids:HIDDEN" "ignore-default-ips" "Do NOT use default IPs" bool
 add_flag "idx:HIDDEN" "ignore-defaults" "Do NOT use default ports and IPs" bool
 add_flag "ifs:HIDDEN" "ignore-failsafe" "Do NOT use the failsafe system" bool
-add_flag "iuc:HIDDEN" "ignore-update" "Do NOT check for new updates" bool
 add_flag "nf:HIDDEN" "no-flush" "Do NOT flush zones" bool
 
 
@@ -47,7 +50,7 @@ VERBOSE=false # describe everything (default: false)
 SILENT=true # dont echo-back commands (not even dry-ones) (default: true)
 LISTING=false # list current rules and exit
 ADD_TO_PATH=false # add this script to the system path and exit
-CHECK_UPDATE=true # check for new updates in repository
+UPDATE=false # update this script to the newest version
 FORCE_UPDATE=false # force update even if its the same version
 
 FLUSH_ZONES=true # flush all rules added from this script (default: true)
@@ -108,7 +111,6 @@ if hasFlag "v"; then VERBOSE=true; fi
 if hasFlag "V"; then VERBOSE=true; SILENT=false; fi
 if hasFlag "fu"; then FORCE_UPDATE=true; fi
 if hasFlag "nf"; then FLUSH_ZONES=false; fi
-if hasFlag "iuc"; then CHECK_UPDATE=false; fi;
 if hasFlag "ifs"; then IGNORE_FAILSAFE=true; fi
 if hasFlag "idp"; then DEFAULT_DROP_PORTS=(); fi
 if hasFlag "ids"; then DEFAULT_TRUSTED_IPS=(); fi
@@ -546,11 +548,11 @@ function check_for_updates() {
     local CURRENT_VERSION=$APP_VERSION
     local LATEST_VERSION="$(curl -s https://api.github.com/repos/phonevox/pfirewall/tags | grep '"name":' | head -n 1 | sed 's/.*"name": "\(.*\)",/\1/')"
 
-    echo "Latest version: $LATEST_VERSION"
-    echo "Current version: $CURRENT_VERSION"
+    echo "Latest source version: $LATEST_VERSION"
+    echo "Current local version: $CURRENT_VERSION"
 
-    #
-    if [[ "$CURRENT_VERSION" == "$LATEST_VERSION" ]]; then
+    # its the same version
+    if ! version_is_greater "$LATEST_VERSION" "$CURRENT_VERSION"; then
         echo "You are using the latest version. ($CURRENT_VERSION)"
         if ! $FORCE_UPDATE; then return 0; fi
     else
@@ -564,23 +566,34 @@ function check_for_updates() {
         exit 1
     fi
     update_all_files
+    exit 0
 }
 
+# needs curl, unzip
 function update_all_files() {
-    echo "Baixando a versão mais recente..."
-    tmp_dir=$(mktemp -d)
-    
-    # obtaining the repository and subbing it
-    curl -L "$ZIP_URL" -o "$tmp_dir/repo.zip"
-    unzip -qo "$tmp_dir/repo.zip" -d "$tmp_dir"
+    local INSTALL_DIR=$CURRDIR
+    local REPO_NAME=$REPO_NAME
+    local ZIP_URL=$ZIP_URL
 
-    cp -r "$tmp_dir/repo-main/"* "$INSTALL_DIR/"
+    echo "- Creating temp dir"
+    tmp_dir=$(mktemp -d) # NOTE(adrian): this is not dry-able. dry will actually make change in the system just as this tmp folder.
     
-    find "$INSTALL_DIR" -type f -name "*.sh" -exec chmod +x {} \;
+    echo "- Downloading repository zip to '$tmp_dir/repo.zip'"
+    srun "curl -L \"$ZIP_URL\" -o \"$tmp_dir/repo.zip\""
+
+    echo "- Unzipping '$tmp_dir/repo.zip' to '$tmp_dir'"
+    srun "unzip -qo \"$tmp_dir/repo.zip\" -d \"$tmp_dir\""
+
+    echo "- Copying files from '$tmp_dir/$REPO_NAME-main' to '$INSTALL_DIR'"
+    srun "cp -r \"$tmp_dir/$REPO_NAME-main/\"* \"$INSTALL_DIR/\""
+    
+    echo "- Updating permissions on '$INSTALL_DIR'"
+    srun "find \"$INSTALL_DIR\" -type f -name \"*.sh\" -exec chmod +x {} \;"
 
     # cleaning
-    rm -rf "$tmp_dir"
-    echo "Atualização completa! Versão atual: $LATEST_VERSION"
+    echo "- Cleaning up"
+    srun "rm -rf \"$tmp_dir\""
+    echo "--- UPDATE FINISHED ---"
 }
 
 
@@ -624,6 +637,7 @@ function run_test() {
 
 function main() {
     if $TEST_RUN; then run_test; fi
+    if $UPDATE; then check_for_updates; fi
     if $DRY; then echo "--- DRY MODE IS ENABLED"; fi
     if $VERBOSE; then echo "--- VERBOSE MODE IS ENABLED"; fi
     if $LISTING; then firewalld_list_configuration; fi
@@ -668,5 +682,4 @@ function main() {
     firewalld_reload
 }
 
-run_test
 main
