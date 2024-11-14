@@ -9,7 +9,7 @@ REPO_OWNER="phonevox"
 REPO_NAME="pfirewall"
 REPO_URL="https://github.com/$REPO_OWNER/$REPO_NAME"
 ZIP_URL="$REPO_URL/archive/refs/heads/main.zip"
-APP_VERSION="v0.2.1" # honestly, I dont know how to do this better
+APP_VERSION="v0.2.2-updHFX" # honestly, I dont know how to do this better
 
 source ./lib/useful.sh
 source ./lib/easyflags.sh
@@ -113,6 +113,7 @@ if hasFlag "V"; then VERBOSE=true; SILENT=false; fi
 if hasFlag "t"; then TEST_RUN=true; fi
 if hasFlag "fu"; then FORCE_UPDATE=true; fi
 if hasFlag "nf"; then FLUSH_ZONES=false; fi
+if hasFlag "upd"; then UPDATE=true; fi
 if hasFlag "ifs"; then IGNORE_FAILSAFE=true; fi
 if hasFlag "idp"; then DEFAULT_DROP_PORTS=(); fi
 if hasFlag "ids"; then DEFAULT_TRUSTED_IPS=(); fi
@@ -555,8 +556,8 @@ function check_for_updates() {
 
     # its the same version
     if ! version_is_greater "$LATEST_VERSION" "$CURRENT_VERSION"; then
-        echo "You are using the latest version. ($CURRENT_VERSION)"
-        if ! $FORCE_UPDATE; then return 0; fi
+        echo "$(colorir verde "You are using the latest version. ($CURRENT_VERSION)")"
+        if ! $FORCE_UPDATE; then exit 1; fi
     else
         echo "You are not using the latest version. (CURRENT: '$CURRENT_VERSION', LATEST: '$LATEST_VERSION')"
     fi
