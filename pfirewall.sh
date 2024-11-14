@@ -4,11 +4,11 @@ FULL_SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 CURRDIR="$(dirname "$FULL_SCRIPT_PATH")"
 SCRIPT_NAME="$(basename "$FULL_SCRIPT_PATH")"
 APP_VERSION="v0.1.3";
+REPO_URL="https://github.com/phonevox/pfirewall"
+ZIP_URL="$REPO_URL/archive/refs/heads/main.zip"
 
 source ./lib/useful.sh
 source ./lib/easyflags.sh
-
-# PS: no need to use run on info-grabbing commands.
 
 # ---
 
@@ -19,6 +19,7 @@ add_flag "s" "" "IPs to whitelist on top of defaults. Example: 0.0.0.0/0,192.168
 add_flag "p" "" "Ports to drop on top of defaults. Example: 20-23/tcp,5060,80/udp,80/tcp,443:force" str 
 add_flag "l" "list" "List current firewall rules/configuration and exit" bool
 add_flag "V" "version" "Show app version and exit" bool
+add_flag "atp:HIDDEN" "install" "Add this script to the system path and exits" bool
 
 #ignores
 add_flag "idp:HIDDEN" "ignore-default-ports" "Do NOT use default ports" bool
@@ -30,10 +31,8 @@ add_flag "nf:HIDDEN" "no-flush" "Do NOT flush zones" bool
 
 # to implement
 # add_flag "e" "engine" "Firewall engine to use (firewalld(default) or iptables)" str # this is not implemented yet
-add_flag "atp:HIDDEN" "install" "Add this script to the system path and exits" bool
 add_flag "upd:HIDDEN" "update" "Update this script to the newest version" bool
 
-# ./magsec.sh -d -v -s 192.168.1.1/24
 set_description "This script aims to set the default firewall rules used by Phonevox, with their default IPs and ports, plus the possibility of adding extra IPs and ports."
 parse_flags "$@"
 
@@ -48,11 +47,11 @@ ADD_TO_PATH=false # add this script to the system path and exit
 
 FLUSH_ZONES=true # flush all rules added from this script (default: true)
 
-IGNORE_FAILSAFE=false # ignore failsafe when flushing
+IGNORE_FAILSAFE=false # ignore ip failsafe when flushing
 FAILSAFE_USER_IP=$(echo $SSH_CLIENT | awk '{print $1}') # ip of the user ssh session that ran the command
 TRUST_FAILSAFE_IP=false # in a flush, should we trust the user's IP? (add it to the trusted list while script is in execution so we guarantee we dont get booted off mid-changes)
 
-ENGINE="firewalld" # idk if ill ever make this a thing. the idea is that you could interchange iptables with firewalld
+ENGINE="firewalld" # to-do, not implemented yet
 
 BUFFER_ADDED_IPS="" # user ips
 BUFFER_ADDED_PORTS="" # user ports
@@ -110,8 +109,7 @@ if hasFlag "idx"; then DEFAULT_TRUSTED_IPS=(); DEFAULT_DROP_PORTS=(); fi
 if hasFlag "atp"; then ADD_TO_PATH=true; fi
 if hasFlag "vrs"; then echo "$APP_VERSION"; exit 0; fi
 
-# confirm failsafe is working
-# checks both if fa
+# inform user about failsafe
 if ! valid_ip $FAILSAFE_USER_IP; then
     echo "WARNING: $(colorir vermelho "FAILSAFE DISABLED")! Found session IP: $FAILSAFE_USER_IP"
     echo "WARNING: $(colorir vermelho "We cannot trust the found IP address, as it is in a bad format.")"
@@ -152,6 +150,7 @@ fi
 PORTS_TO_DROP+=("${DEFAULT_DROP_PORTS[@]}")
 
 # obtaining user IPs from stdin (if any)
+# read_stdin comes from lib/useful.sh
 while IFS= read -r line; do
     if [[ -n "$line" ]]; then
         if $VERBOSE; then echo "VERBOSE: stdin: $line"; fi
@@ -275,6 +274,7 @@ firewalld_flush_zone() {
 # adds a trusted ip to the firewalld
 # if already whitelisted, does nothing
 # checks if firewalld is running first, fails if not
+# optionally, you can pass zone as second argument
 # Usage: firewalld_add_trusted "192.168.1.1/24"
 firewalld_add_trusted() {
     local ip=$1
@@ -532,6 +532,40 @@ firewalld_reload() {
     srun "firewall-cmd --reload"
 }
 
+# ---===---
+# For updates
+
+check_for_updates() {
+    local CURRENT_VERSION=$APP_VERSION
+    local LATEST_VERSION="$(curl -s https://api.github.com/repos/phonevox/pfirewall/releases/latest | grep tag_name | sed -E 's/.*"([^"]+)".*/\1/')"
+
+    echo "Latest version: $LATEST_VERSION"
+    echo "Current version: $CURRENT_VERSION"
+
+    if [[ "$CURRENT_VERSION" != "$LATEST_VERSION" ]]; then
+    else
+        echo "You are using the latest version. ($CURRENT_VERSION)"
+    fi
+}
+
+function update_all_files() {
+    echo "Baixando a versão mais recente..."
+    tmp_dir=$(mktemp -d)
+    
+    # Baixa e extrai o repositório inteiro
+    curl -L "$ZIP_URL" -o "$tmp_dir/repo.zip"
+    unzip -qo "$tmp_dir/repo.zip" -d "$tmp_dir"
+    
+    # Substitui todos os arquivos no diretório de instalação
+    cp -r "$tmp_dir/repo-main/"* "$INSTALL_DIR/"
+    
+    chmod +x "$INSTALL_DIR/script.sh"
+    rm -rf "$tmp_dir"
+    echo "Atualização completa! Versão atual: $LATEST_VERSION"
+}
+
+
+# ---===---
 
 # --- RUNTIME
 
@@ -540,24 +574,25 @@ if $VERBOSE; then echo "--- VERBOSE MODE IS ENABLED"; fi
 if $LISTING; then firewalld_list_configuration; fi
 if $ADD_TO_PATH; then add_script_to_path; fi
 
-# 1. Desativar o fail2ban
+# 1. Disable fail2ban
+
+# do a check: if debian, disable fail2ban (magnusbilling)
+# if centos/rocky/anything else, keep it enabled (maybe?)
 srun "sudo systemctl stop fail2ban"
 srun "sudo systemctl disable fail2ban"
 
-# 2. Confirmar que o firewalld está rodando
-# 3. Confirmar que o firewalld está pra inicializar no boot
-# (isso já está imbutido no "drop_port" e no "add_trusted")
+# 1.5. make sure our engine is working/running. this is already done in other parts of the script
 
-# 3.5. Alinhar as zones.
+# 2. Create/confirm zones
 firewalld_do_zone_stuff
 
-# 4. Criar as exceções
+# 3. Create exceptions
 echo "--- WHITELIST"
 for ip in "${IPS_TO_ALLOW[@]}"; do
     firewalld_add_trusted "$ip"
 done
 
-# 5. Criar os drops
+# 4. Create drops
 echo "--- PORT DROPS"
 for port_type_force in "${PORTS_TO_DROP[@]}"; do
     _port=""
@@ -573,11 +608,6 @@ for port_type_force in "${PORTS_TO_DROP[@]}"; do
     unset IFS
 done
 
-# 6. Reloadar o firewalld pra aplicar as alterações
+# 5. Reload to apply changes
 echo "--- RELOADING FIREWALLD TO APPLY CHANGES ---"
 firewalld_reload
-
-# TO-DO: 
-# - se re-executar isso, tem que mudar as regras atuais. precisa limpá-las e refazer, ou algo do tipo. pensar sobre isso
-# - reload depois do fix das zonas?
-# ( preciso resolver o problema de eu deletar e criar a zona, e tentar adicionar ips nela. o firewall precisa reconhecer que eu limpei as regras e adicionei dnv. checar o terminal ae )
