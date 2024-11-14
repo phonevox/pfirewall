@@ -20,18 +20,21 @@ add_flag "p" "" "Ports to drop on top of defaults. Example: 20-23/tcp,5060,80/ud
 add_flag "l" "list" "List current firewall rules/configuration and exit" bool
 add_flag "V" "version" "Show app version and exit" bool
 add_flag "atp:HIDDEN" "install" "Add this script to the system path and exits" bool
+add_flag "t:HIDDEN" "test" "DEBUGGING TOOL" bool # runs function run_test() and exits
+add_flag  "upd:HIDDEN" "update" "Update this script to the newest version" bool
+add_flag  "fu:HIDDEN" "force-update" "Force the update even if its in the same version" bool
 
 #ignores
 add_flag "idp:HIDDEN" "ignore-default-ports" "Do NOT use default ports" bool
 add_flag "ids:HIDDEN" "ignore-default-ips" "Do NOT use default IPs" bool
 add_flag "idx:HIDDEN" "ignore-defaults" "Do NOT use default ports and IPs" bool
 add_flag "ifs:HIDDEN" "ignore-failsafe" "Do NOT use the failsafe system" bool
+add_flag "iuc:HIDDEN" "ignore-update" "Do NOT check for new updates" bool
 add_flag "nf:HIDDEN" "no-flush" "Do NOT flush zones" bool
 
 
 # to implement
 # add_flag "e" "engine" "Firewall engine to use (firewalld(default) or iptables)" str # this is not implemented yet
-add_flag "upd:HIDDEN" "update" "Update this script to the newest version" bool
 
 set_description "This script aims to set the default firewall rules used by Phonevox, with their default IPs and ports, plus the possibility of adding extra IPs and ports."
 parse_flags "$@"
@@ -44,6 +47,8 @@ VERBOSE=false # describe everything (default: false)
 SILENT=true # dont echo-back commands (not even dry-ones) (default: true)
 LISTING=false # list current rules and exit
 ADD_TO_PATH=false # add this script to the system path and exit
+CHECK_UPDATE=true # check for new updates in repository
+FORCE_UPDATE=false # force update even if its the same version
 
 FLUSH_ZONES=true # flush all rules added from this script (default: true)
 
@@ -101,7 +106,9 @@ if hasFlag "d"; then DRY=true; fi
 if hasFlag "l"; then LISTING=true; fi
 if hasFlag "v"; then VERBOSE=true; fi
 if hasFlag "V"; then VERBOSE=true; SILENT=false; fi
+if hasFlag "fu"; then FORCE_UPDATE=true; fi
 if hasFlag "nf"; then FLUSH_ZONES=false; fi
+if hasFlag "iuc"; then CHECK_UPDATE=false; fi;
 if hasFlag "ifs"; then IGNORE_FAILSAFE=true; fi
 if hasFlag "idp"; then DEFAULT_DROP_PORTS=(); fi
 if hasFlag "ids"; then DEFAULT_TRUSTED_IPS=(); fi
@@ -161,7 +168,7 @@ done <<< "$(read_stdin)" 2>&1 # i dont this this input redirect does shit LOL
 # ---
 
 # safe-run
-srun () {
+function srun () {
     local COMMAND=$1
     local USER_ACCEPTABLE_EXIT_CODES=$2
 
@@ -172,7 +179,7 @@ srun () {
 # stops application if firewalld is not running
 # sets FIREWALLD_IS_RUNNING and FIREWALLD_IS_ENABLED
 # so you dont need to system call again (singleton-style)
-firewalld_check_status() {
+function firewalld_check_status() {
     i=$((i+1)) # debug
     # echo "$i: Checking firewalld status..."
     # echo "$i: RUNNING: $FIREWALLD_IS_RUNNING"
@@ -207,7 +214,7 @@ firewalld_check_status() {
 # if it does not exist, create it
 # if anything goes wrong, fails hard
 # Usage: firewalld_create_zone "trusted"
-firewalld_guarantee_zone() {
+function firewalld_guarantee_zone() {
     local zone=$1
     local zone_target=$2
     local _text_message=""
@@ -250,7 +257,7 @@ firewalld_guarantee_zone() {
 # this doesnt flush, but instead, drops the zone so firewalld_guarantee_zone() 
 # can create it again without any rules.
 # Usage: firewalld_flush_zone "ptrusted"
-firewalld_flush_zone() {
+function firewalld_flush_zone() {
     local zone=$1
     local _text_message=""
 
@@ -276,7 +283,7 @@ firewalld_flush_zone() {
 # checks if firewalld is running first, fails if not
 # optionally, you can pass zone as second argument
 # Usage: firewalld_add_trusted "192.168.1.1/24"
-firewalld_add_trusted() {
+function firewalld_add_trusted() {
     local ip=$1
     local zone=$TRUST_ZONE_NAME # default zone
     if  ! [ -z "$2" ]; then local zone=$2; fi # if second argument is passed, interpret as zone
@@ -319,7 +326,7 @@ firewalld_add_trusted() {
 # uhh, yeah
 # my creativity ran out right here
 # Usage: firewall_do_zone_stuff
-firewalld_do_zone_stuff() {
+function firewalld_do_zone_stuff() {
     echo "--- CHECKING ZONES, MIGHT TAKE A WHILE"
 
     if $IGNORE_FAILSAFE; then
@@ -355,7 +362,7 @@ firewalld_do_zone_stuff() {
 # Usage: firewalld_drop_port "port:integer/range" "protocol:tcp/udp..." "force:true/false"
 # i.e. firewalld_drop_port "80" "tcp" "true"
 # i.e. firewalld_drop_port "20-23" "tcp" ""
-firewalld_drop_port() {
+function firewalld_drop_port() {
     local port=$1
     local type=$2 # optional, if not present, will drop both tcp and udp
     local zone=$DROP_ZONE_NAME
@@ -459,7 +466,7 @@ firewalld_drop_port() {
 
 # list the current firewalld configuration, and informations about this script
 # Usage: firewalld_list_configuration
-firewalld_list_configuration() {
+function firewalld_list_configuration() {
 
     echo "=~= $(colorir "azul" "YOUR SESSION IP FOR FAILSAFE MEASURES IS: $FAILSAFE_USER_IP") =~="
 
@@ -494,7 +501,7 @@ firewalld_list_configuration() {
 # add to system path
 # THIS IS HEAVY TO-DO
 # Usage: add_script_to_path 
-add_script_to_path() {
+function add_script_to_path() {
     local _BIN_NAME="pfirewall"
     local _PATH="/usr/sbin/$_BIN_NAME"
     local _PATH_SCRIPT_BINARY="$FULL_SCRIPT_PATH"
@@ -528,86 +535,138 @@ add_script_to_path() {
 
 # literally just a reload
 # Usage: firewalld_reload
-firewalld_reload() {
+function firewalld_reload() {
     srun "firewall-cmd --reload"
 }
 
 # ---===---
 # For updates
 
-check_for_updates() {
+function check_for_updates() {
     local CURRENT_VERSION=$APP_VERSION
-    local LATEST_VERSION="$(curl -s https://api.github.com/repos/phonevox/pfirewall/releases/latest | grep tag_name | sed -E 's/.*"([^"]+)".*/\1/')"
+    local LATEST_VERSION="$(curl -s https://api.github.com/repos/phonevox/pfirewall/tags | grep '"name":' | head -n 1 | sed 's/.*"name": "\(.*\)",/\1/')"
 
     echo "Latest version: $LATEST_VERSION"
     echo "Current version: $CURRENT_VERSION"
 
-    if [[ "$CURRENT_VERSION" != "$LATEST_VERSION" ]]; then
-    else
+    #
+    if [[ "$CURRENT_VERSION" == "$LATEST_VERSION" ]]; then
         echo "You are using the latest version. ($CURRENT_VERSION)"
+        if ! $FORCE_UPDATE; then return 0; fi
+    else
+        echo "You are not using the latest version. (CURRENT: '$CURRENT_VERSION', LATEST: '$LATEST_VERSION')"
     fi
+
+    echo "Do you want to download the latest version from source? ($(colorir azul "$CURRENT_VERSION") -> $(colorir azul "$LATEST_VERSION")) ($(colorir verde y)/$(colorir vermelho n))"
+    read -r _answer 
+    if ! [[ "$_answer" == "y" ]]; then
+        echo "Exiting..."
+        exit 1
+    fi
+    update_all_files
 }
 
 function update_all_files() {
     echo "Baixando a versão mais recente..."
     tmp_dir=$(mktemp -d)
     
-    # Baixa e extrai o repositório inteiro
+    # obtaining the repository and subbing it
     curl -L "$ZIP_URL" -o "$tmp_dir/repo.zip"
     unzip -qo "$tmp_dir/repo.zip" -d "$tmp_dir"
-    
-    # Substitui todos os arquivos no diretório de instalação
+
     cp -r "$tmp_dir/repo-main/"* "$INSTALL_DIR/"
     
-    chmod +x "$INSTALL_DIR/script.sh"
+    find "$INSTALL_DIR" -type f -name "*.sh" -exec chmod +x {} \;
+
+    # cleaning
     rm -rf "$tmp_dir"
     echo "Atualização completa! Versão atual: $LATEST_VERSION"
 }
 
 
+function version_is_greater() {
+    # ignore metadata
+    ver1=$(echo "$1" | grep -oE '^[vV]?[0-9]+\.[0-9]+\.[0-9]+')
+    ver2=$(echo "$2" | grep -oE '^[vV]?[0-9]+\.[0-9]+\.[0-9]+')
+    
+    # remove "v" prefix
+    ver1="${ver1#v}"
+    ver2="${ver2#v}"
+
+    # gets major, minor and patch
+    IFS='.' read -r major1 minor1 patch1 <<< "$ver1"
+    IFS='.' read -r major2 minor2 patch2 <<< "$ver2"
+
+    # compares major, then minor, then patch
+    if (( major1 > major2 )); then
+        return 0
+    elif (( major1 < major2 )); then
+        return 1
+    elif (( minor1 > minor2 )); then
+        return 0
+    elif (( minor1 < minor2 )); then
+        return 1
+    elif (( patch1 > patch2 )); then
+        return 0
+    else
+        return 1
+    fi
+}
+
 # ---===---
 
 # --- RUNTIME
 
-if $DRY; then echo "--- DRY MODE IS ENABLED"; fi
-if $VERBOSE; then echo "--- VERBOSE MODE IS ENABLED"; fi
-if $LISTING; then firewalld_list_configuration; fi
-if $ADD_TO_PATH; then add_script_to_path; fi
+function run_test() {
+    check_for_updates
+    exit 0
+}
 
-# 1. Disable fail2ban
+function main() {
+    if $TEST_RUN; then run_test; fi
+    if $DRY; then echo "--- DRY MODE IS ENABLED"; fi
+    if $VERBOSE; then echo "--- VERBOSE MODE IS ENABLED"; fi
+    if $LISTING; then firewalld_list_configuration; fi
+    if $ADD_TO_PATH; then add_script_to_path; fi
 
-# do a check: if debian, disable fail2ban (magnusbilling)
-# if centos/rocky/anything else, keep it enabled (maybe?)
-srun "sudo systemctl stop fail2ban"
-srun "sudo systemctl disable fail2ban"
+    # 1. Disable fail2ban
 
-# 1.5. make sure our engine is working/running. this is already done in other parts of the script
+    # do a check: if debian, disable fail2ban (magnusbilling)
+    # if centos/rocky/anything else, keep it enabled (maybe?)
+    srun "sudo systemctl stop fail2ban"
+    srun "sudo systemctl disable fail2ban"
 
-# 2. Create/confirm zones
-firewalld_do_zone_stuff
+    # 1.5. make sure our engine is working/running. this is already done in other parts of the script
 
-# 3. Create exceptions
-echo "--- WHITELIST"
-for ip in "${IPS_TO_ALLOW[@]}"; do
-    firewalld_add_trusted "$ip"
-done
+    # 2. Create/confirm zones
+    firewalld_do_zone_stuff
 
-# 4. Create drops
-echo "--- PORT DROPS"
-for port_type_force in "${PORTS_TO_DROP[@]}"; do
-    _port=""
-    _type=""
-    _force=false
+    # 3. Create exceptions
+    echo "--- WHITELIST"
+    for ip in "${IPS_TO_ALLOW[@]}"; do
+        firewalld_add_trusted "$ip"
+    done
 
-    IFS=":" read -r port_type _force <<< "${port_type_force}" # isolate force option
-    IFS="/" read -r _port _type <<< "$port_type" # separate remainder as port and type
-    if [[ "$_force" == "force" || "$_force" == "true" ]]; then _force=true; fi
+    # 4. Create drops
+    echo "--- PORT DROPS"
+    for port_type_force in "${PORTS_TO_DROP[@]}"; do
+        local _port=""
+        local _type=""
+        local _force=false
 
-    firewalld_drop_port "$_port" "$_type" "$_force"
+        IFS=":" read -r port_type _force <<< "${port_type_force}" # isolate force option
+        IFS="/" read -r _port _type <<< "$port_type" # separate remainder as port and type
+        if [[ "$_force" == "force" || "$_force" == "true" ]]; then _force=true; fi
 
-    unset IFS
-done
+        firewalld_drop_port "$_port" "$_type" "$_force"
 
-# 5. Reload to apply changes
-echo "--- RELOADING FIREWALLD TO APPLY CHANGES ---"
-firewalld_reload
+        unset IFS
+    done
+
+    # 5. Reload to apply changes
+    echo "--- RELOADING FIREWALLD TO APPLY CHANGES ---"
+    firewalld_reload
+}
+
+run_test
+main

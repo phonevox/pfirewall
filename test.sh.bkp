@@ -1,0 +1,19 @@
+#!/bin/bash
+
+source ./lib/useful.sh
+source ./lib/easyflags.sh
+
+FULL_SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+CURRDIR="$(dirname "$FULL_SCRIPT_PATH")"
+SCRIPT_NAME="$(basename "$FULL_SCRIPT_PATH")"
+
+echo "SCRIPT PATH: $FULL_SCRIPT_PATH"
+mv $FULL_SCRIPT_PATH $FULL_SCRIPT_PATH.bkp
+echo "test"
+
+# run a loop counting to 1000, but echo every 100 loops
+sleep 10
+echo "testing 1"
+sleep 5
+echo "testing 2"
+exit 0
