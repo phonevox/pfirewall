@@ -9,7 +9,7 @@ REPO_OWNER="phonevox"
 REPO_NAME="pfirewall"
 REPO_URL="https://github.com/$REPO_OWNER/$REPO_NAME"
 ZIP_URL="$REPO_URL/archive/refs/heads/main.zip"
-APP_VERSION="v0.2.4" # honestly, I dont know how to do this better
+APP_VERSION="v0.2.5" # honestly, I dont know how to do this better
 
 source $CURRDIR/lib/useful.sh
 source $CURRDIR/lib/easyflags.sh
@@ -355,7 +355,7 @@ function firewalld_do_zone_stuff() {
     fi
 
     firewalld_guarantee_zone "$TRUST_ZONE_NAME" "ACCEPT"
-    firewalld_guarantee_zone "$DROP_ZONE_NAME" "DROP" # guarantee that zone exists, and its on drop mode
+    firewalld_guarantee_zone "$DROP_ZONE_NAME" "ACCEPT"
     firewalld_reload # apply creation
 }
 
@@ -444,14 +444,15 @@ function firewalld_drop_port() {
     if ! $FIREWALLD_IS_RUNNING; then firewalld_check_status; fi
 
     # obtaining port status
-    firewall-cmd --zone=$zone --list-ports | grep -q "$port/$type" && _port_is_open=true || _port_is_open=false
+    firewall-cmd --zone=$zone --list-rich-rules | grep -qi "$port.*$type.*reject$" && _port_is_open=false || _port_is_open=true
 
     # if $VERBOSE; then echo "VERBOSE: Port $port/$type open? $_port_is_open"; fi
 
     if ! $_port_is_open; then
         # port is not open: its already dropped or not added yet
-        if [[ "$force" == "true" ]]; then
-            srun "firewall-cmd --permanent --zone=$zone --add-port=$port/$type"
+        if [[ "$force" == "true" ]]; then 
+            # @NOTE(adrian): this does not make sense: the rich rule already exists, theres no need to "force" it again. oh well.
+            srun "firewall-cmd --zone=$zone --add-rich-rule='rule family=\"ipv4\" port port=\"$port\" protocol=\"$type\" reject' --permanent"
             local _text_color=verde_lima
             local _text_message="[$(colorir $_text_color "🗸")] $(colorir $_text_color "$zone : $port/$type") (forced)"
         else
@@ -459,7 +460,7 @@ function firewalld_drop_port() {
             local _text_message="[$(colorir $_text_color "●")] $(colorir $_text_color "$zone : $port/$type") (not open)"
         fi
     else
-        srun "firewall-cmd --permanent --zone=$zone --add-port=$port/$type"
+        srun "firewall-cmd --zone=$zone --add-rich-rule='rule family=\"ipv4\" port port=\"$port\" protocol=\"$type\" reject' --permanent"
         local _text_color=verde
         local _text_message="[$(colorir $_text_color "🗸")] $(colorir $_text_color "$zone : $port/$type")"
     fi
@@ -496,7 +497,7 @@ function firewalld_list_configuration() {
     # firewall-cmd --permanent --zone=$TRUST_ZONE_NAME --get-target
 
     echo "=~= $(colorir "vermelho" "CURRENT $DROP_ZONE_NAME ZONE (port drop, if invalid then it doesnt exist)") =~="
-    firewall-cmd --zone=$DROP_ZONE_NAME --list-all | egrep "target| ports"
+    firewall-cmd --zone=$DROP_ZONE_NAME --list-all | egrep "target| ports|rule "
     # firewall-cmd --zone=$DROP_ZONE_NAME --list-ports | egrep "target|sources|ports"
     # firewall-cmd --permanent --zone=$DROP_ZONE_NAME --get-target
     exit 0
