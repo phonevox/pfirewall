@@ -1,0 +1,21 @@
+# This refers to the default port drops,
+# Do NOT add IPs here. This is specifically meant for port dropping.
+# port[-range_end]/protocol:force
+# 20-22/tcp:force # (force 20, 21, 22 tcp)
+# 20-22:force # (force 20, 21, 22 tcp and udp)
+# 22 # ( 22 tcp and udp)
+# 5060 # ( 5060 tcp and udp)
+995/udp       # POP3D
+995/tcp       # POP3D
+110/udp       # POP3D
+110/tcp       # POP3D
+4569/udp      # IAX
+5353/udp      # mDNS
+20-23:force   # 20 ftp(data), 21 ftp, 22 ssh, 23 telnet
+80/tcp        # HTTP
+443/tcp       # HTTPS
+3306/tcp      # MySQL
+5038/tcp      # Asterisk Manager Interface
+21122/tcp     # Phonevox custom ssh
+10050/tcp     # Zabbix (agent)
+10051/tcp     # Zabbix (server)

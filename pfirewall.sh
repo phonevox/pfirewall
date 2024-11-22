@@ -131,7 +131,6 @@ if hasFlag "s"; then
     done
     unset IFS
 fi
-
 IPS_TO_ALLOW+=("${DEFAULT_TRUSTED_IPS[@]}")
 
 # obtaining user ports from flag

@@ -1,0 +1,18 @@
+# Add here each IP you want to allow. Consider one IP per line.
+# Subnet mask must be in CIDR format. Below some commented examples:
+# 1.2.3.4 # <-- This is basically /32.
+# 1.2.3.4/255.255.255.0 # <-- This is NOT allowed; do NOT do this.
+# 1.2.3.4/24 # <-- Do this instead.
+127.0.0.1         # LOCALHOST
+10.0.0.0/8        # INTERNO
+172.16.0.0/12     # INTERNO
+192.168.0.0/16    # INTERNO
+189.124.85.75     # PHONEVOX PRINCIPAL
+186.233.124.252   # PHONEVOX SECUNDARIO
+189.124.85.152/29 # PHONEVOX REDE
+186.233.120.72/29 # PHONEVOX REDE
+209.14.71.154     # PHONEVOX MAGNUS 1
+149.78.185.36     # PHONEVOX MAGNUS 2
+51.79.49.144      # PHONEVOX INTERNO/ZABBIX
+45.140.193.125    # PHONEVOX HELPDESK
+186.233.122.92    # PHONEVOX ABNER
