@@ -9,7 +9,7 @@ REPO_OWNER="phonevox"
 REPO_NAME="pfirewall"
 REPO_URL="https://github.com/$REPO_OWNER/$REPO_NAME"
 ZIP_URL="$REPO_URL/archive/refs/heads/main.zip"
-APP_VERSION="v0.3.0" # honestly, I dont know how to do this better
+APP_VERSION="v0.3.1" # honestly, I dont know how to do this better
 
 source $CURRDIR/lib/useful.sh
 source $CURRDIR/lib/easyflags.sh
@@ -21,8 +21,8 @@ SYSTEM_OS=$(get_os)
 add_flag "d" "dry" "Do NOT make changes to the system" bool
 add_flag "v" "verbose" "Verbose mode" bool
 add_flag "vv" "super-verbose" "Enter super verbose mode, and show all commands made" bool
-add_flag "s" "" "IPs to whitelist on top of defaults. Example: 0.0.0.0/0,192.168.1.1" str
-add_flag "p" "" "Ports to drop on top of defaults. Example: 20-23/tcp,5060,80/udp,80/tcp,443:force" str 
+add_flag "s" "" "IPs to whitelist on top of 'allow' file. Example: 0.0.0.0/0,192.168.1.1" str
+add_flag "p" "" "Ports to drop on top of 'drops' file. Example: 20-23/tcp,5060,80/udp,80/tcp,443:force" str 
 add_flag "l" "list" "List current firewall rules/configuration and exit" bool
 add_flag "V" "version" "Show app version and exit" bool
 add_flag "atp:HIDDEN" "install" "Add this script to the system path and exits" bool
@@ -31,12 +31,11 @@ add_flag "upd:HIDDEN" "update" "Update this script to the newest version" bool
 add_flag "fu:HIDDEN" "force-update" "Force the update even if its in the same version" bool
 
 #ignores
-add_flag "idp:HIDDEN" "ignore-default-ports" "Do NOT use default ports" bool
-add_flag "ids:HIDDEN" "ignore-default-ips" "Do NOT use default IPs" bool
-add_flag "idx:HIDDEN" "ignore-defaults" "Do NOT use default ports and IPs" bool
+add_flag "idp:HIDDEN" "ignore-default-ports" "Do NOT use values from 'drops' file" bool
+add_flag "ids:HIDDEN" "ignore-default-ips" "Do NOT use values from 'allow' file" bool
+add_flag "idx:HIDDEN" "ignore-defaults" "Do NOT use values from 'allow' AND 'drops' file" bool
 add_flag "ifs:HIDDEN" "ignore-failsafe" "Do NOT use the failsafe system" bool
 add_flag "nf:HIDDEN" "no-flush" "Do NOT flush zones" bool
-
 
 # to implement
 add_flag "e" "engine" "Firewall engine to use. Defaults as firewalld (firewalld|iptables)" str # this is not implemented yet
@@ -47,6 +46,8 @@ parse_flags "$@"
 # ---
 
 # ignore this --> 🗸 🞩 ↺
+
+# config-related
 DRY=false # dont change my system (default: false)
 VERBOSE=false # describe everything (default: false)
 SILENT=true # dont echo-back commands (not even dry-ones) (default: true)
@@ -55,56 +56,39 @@ ADD_TO_PATH=false # add this script to the system path and exit
 UPDATE=false # update this script to the newest version
 FORCE_UPDATE=false # force update even if its the same version
 TEST_RUN=false
-
 FLUSH_ZONES=true # flush all rules added from this script (default: true)
 
+# zone-related
+TRUST_ZONE_NAME="ptrusted"
+DROP_ZONE_NAME="pdrop"
 IGNORE_FAILSAFE=false # ignore ip failsafe when flushing
 FAILSAFE_USER_IP=$(echo $SSH_CLIENT | awk '{print $1}') # ip of the user ssh session that ran the command
 TRUST_FAILSAFE_IP=false # in a flush, should we trust the user's IP? (add it to the trusted list while script is in execution so we guarantee we dont get booted off mid-changes)
 
-ENGINE="firewalld" # to-do, not implemented yet
+# engine-related
+DEFAULT_ENGINE="firewalld"
+if [[ "$SYSTEM_OS" =~ "rocky" || "$SYSTEM_OS" =~ "centos" ]]; then DEFAULT_ENGINE="iptables"; fi
+ENGINE=$DEFAULT_ENGINE
 
+# userinput-related
 BUFFER_ADDED_IPS="" # user ips
 BUFFER_ADDED_PORTS="" # user ports
-TRUST_ZONE_NAME="ptrusted"
-DROP_ZONE_NAME="pdrop"
-DEFAULT_TRUSTED_IPS=(
-    #"IP or IP/CIDR"
-    "127.0.0.1"         # LOCALHOST
-    "10.0.0.0/8"        # INTERNO
-    "172.16.0.0/12"     # INTERNO
-    "192.168.0.0/16"    # INTERNO
-    "189.124.85.75"     # PHONEVOX PRINCIPAL
-    "186.233.124.252"   # PHONEVOX SECUNDARIO
-    "189.124.85.152/29" # PHONEVOX REDE
-    "186.233.120.72/29" # PHONEVOX REDE
-    "209.14.71.154"     # PHONEVOX MAGNUS 1
-    "149.78.185.36"     # PHONEVOX MAGNUS 2
-    "51.79.49.144"      # PHONEVOX INTERNO/ZABBIX
-    "45.140.193.125"    # PHONEVOX HELPDESK
-    "186.233.122.92"    # PHONEVOX ABNER
-)
-DEFAULT_DROP_PORTS=(
-    #"port/type:forcedrop"
-    # "1/tcp:force" # EXAMPLE: tcp, force
-    # "1/tcp"       # EXAMPLE: tcp, dont force
-    # "1:force"     # EXAMPLE: tcp and udp (default), force
-    # "1"           # EXAMPLE: tcp and udp (default), dont force
-    "995/udp"       # POP3D
-    "995/tcp"       # POP3D
-    "110/udp"       # POP3D
-    "110/tcp"       # POP3D
-    "4569/udp"      # IAX
-    "5353/udp"      # mDNS
-    "20-23:force"   # 20 ftp(data), 21 ftp, 22 ssh, 23 telnet
-    "80/tcp"        # HTTP
-    "443/tcp"       # HTTPS
-    "3306/tcp"      # MySQL
-    "5038/tcp"      # Asterisk Manager Interface
-    "21122/tcp"     # Phonevox custom ssh
-    "10050/tcp"     # Zabbix (agent)
-    "10051/tcp"     # Zabbix (server)
-)
+
+DEFAULT_TRUSTED_IPS=()
+while IFS= read -r line; do
+    if [[ -n "$line" ]]; then
+        if $VERBOSE; then echo "VERBOSE: DEFAULT_TRUSTED_IPS : stdin: $line"; fi
+        DEFAULT_TRUSTED_IPS+=("$line")
+    fi
+done <<< "$(read_stdin "$CURRDIR/allow")" 2>&1
+
+DEFAULT_DROP_PORTS=()
+while IFS= read -r line; do
+    if [[ -n "$line" ]]; then
+        if $VERBOSE; then echo "VERBOSE: DEFAULT_DROP_PORTS : stdin: $line"; fi
+        DEFAULT_DROP_PORTS+=("$line")
+    fi
+done <<< "$(read_stdin "$CURRDIR/drops")" 2>&1
 
 FIREWALLD_IS_ENABLED=false
 FIREWALLD_IS_RUNNING=false
@@ -147,6 +131,7 @@ if hasFlag "s"; then
     done
     unset IFS
 fi
+
 IPS_TO_ALLOW+=("${DEFAULT_TRUSTED_IPS[@]}")
 
 # obtaining user ports from flag
@@ -171,7 +156,7 @@ while IFS= read -r line; do
         if $VERBOSE; then echo "VERBOSE: stdin: $line"; fi
         IPS_TO_ALLOW+=("$line")
     fi
-done <<< "$(read_stdin)" 2>&1 # i dont this this input redirect does shit LOL
+done <<< "$(read_stdin)" 2>&1 # i dont think this input redirect does shit LOL
 
 # ---
 
@@ -222,9 +207,7 @@ function iptables_engine() {
     done
 
     # 5. Reload to apply (? not necessary in iptables?)
-    # I WILL ASSUME THAT RULE NUMBER #1 IS OUR FAILSAFE. MIGHT BE WRONG. MIGHT BE RIGHT. I DONT KNOW
-    
-
+    echo "--- ALL DONE!"
 }
 
 
@@ -253,6 +236,7 @@ function iptables_do_zone_stuff() {
     iptables_guarantee_jail "$DROP_ZONE_NAME"
 
     echo "--- SETTING JAIL ORDER ---"
+    # I WILL ASSUME THAT RULE NUMBER #1 IS OUR FAILSAFE. MIGHT BE WRONG. MIGHT BE RIGHT. I DONT KNOW
     srun "iptables -I INPUT 2 -j $TRUST_ZONE_NAME"
     srun "iptables -I INPUT 3 -j F2B_INPUT"
     srun "iptables -I INPUT 4 -j $DROP_ZONE_NAME"
@@ -262,34 +246,37 @@ function iptables_do_zone_stuff() {
 function iptables_purge_input_keep_failsafe() {
     local FAILSAFE=$FAILSAFE_USER_IP  # IP de failsafe
 
+    if $VERBOSE; then echo "VERBOSE: PURGING INPUT CHAIN"; fi
+
     # adding the IP
     if ! iptables -C INPUT -s "$FAILSAFE" -j ACCEPT 2>/dev/null; then
-        iptables_add_trusted "$FAILSAFE_USER_IP" INPUT 1
+        iptables_add_trusted "$FAILSAFE" INPUT 1
     fi
 
-    # Lista todas as regras da cadeia INPUT com detalhes
+    # current rules on INPUT chain
     rules=$(iptables -S | grep "A INPUT")
 
     # echo "DEBUG: FAILSAFE IP: $FAILSAFE"
     # echo -e "DEBUG: RULES: \n$rules"
 
-    # Itera sobre todas as regras da cadeia INPUT
     while read -r line; do
-        # Pega o conteúdo da regra (ignorando os números de linha)
+
+        # get one of the rules
         rule_content=$(echo "$line" | sed 's/^[ \t]*//')
 
-        # Remove o prefixo "-A INPUT" da regra para usar o comando -D
+        # removes "-A INPUT" prefix (for eventual -D command)
         rule_to_delete=$(echo "$rule_content" | sed 's/^[-]A INPUT//')
 
-        # Verifica se a regra não corresponde ao IP de failsafe
+        # checks if its not the failsafe ip
         if [[ "$rule_to_delete" != *"-s $FAILSAFE"* ]]; then
-            # Remove a regra usando o conteúdo modificado
-            echo "Removendo regra: $rule_content"
+
+            # deletes the rule (this is why we had to prune off "-A INPUT")
+            if $VERBOSE; then echo "VERBOSE: Deleting rule '$rule_content'"; fi
             srun "iptables -D INPUT $rule_to_delete"
         fi
-    done <<< "$rules"  # Itera sobre as regras diretamente
+    done <<< "$rules" # iterate over the rules we found
 
-    echo "Failsafe IP $FAILSAFE kept, and everything else in INPUT was purged."
+    if $VERBOSE; then echo "VERBOSE: FAILSAFE IP $FAILSAFE kept, and everything else in INPUT was purged."; fi
 }
 
 
@@ -308,9 +295,21 @@ function iptables_purge_jail() {
         srun "iptables -F \"$jail\""
 
         if $VERBOSE; then echo "VERBOSE: [ $jail ] Removing references"; fi
-        srun "iptables -D INPUT -j \"$jail\"" 
-        srun "iptables -D OUTPUT -j \"$jail\""
-        srun "iptables -D FORWARD -j \"$jail\""
+        
+        # INPUT JAIL
+        if iptables -C INPUT -j "$jail" &>/dev/null; then
+            srun "iptables -D INPUT -j \"$jail\""
+        fi
+
+        # OUTPUT JAIL
+        if iptables -C OUTPUT -j "$jail" &>/dev/null; then
+            srun "iptables -D OUTPUT -j \"$jail\""
+        fi
+
+        # FORWARD JAIL
+        if iptables -C FORWARD -j "$jail" &>/dev/null; then
+            srun "iptables -D FORWARD -j \"$jail\""
+        fi
 
         if $VERBOSE; then echo "VERBOSE: [ $jail ] Deleting jail"; fi
         srun "iptables -X \"$jail\""
@@ -506,6 +505,8 @@ function firewalld_engine() {
     # 5. Reload to apply changes
     echo "--- RELOADING FIREWALLD TO APPLY CHANGES ---"
     firewalld_reload
+
+    echo "--- ALL DONE!"
 }
 
 
@@ -964,7 +965,8 @@ function version_is_greater() {
 # RUNTIME
 
 function run_test() {
-    check_for_updates
+    echo "${DEFAULT_TRUSTED_IPS[@]}"
+    echo "${DEFAULT_DROP_PORTS[@]}"
     exit 0
 }
 

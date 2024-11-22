@@ -219,6 +219,8 @@ function log() {
 # this is dark magic, i wont even try to explain
 # in short it will make the script gets values from redirects
 # Usage: STDIN=$(read_stdin)
+# STDIN=$(read_stdin) 
+# FILE=$(read_stdin "file.txt")
 # on script call: ./script.sh < some_file.txt
 # then, you can iterate over the STDIN variable to get every line of your input file
 function read_stdin () {
@@ -227,16 +229,31 @@ function read_stdin () {
     local FORCE_NEWLINE=1
     local IGNORE_EMPTY_INPUT=1
 
-    if [ -t 0 ]; then
-        if ! [ "$IGNORE_EMPTY_INPUT" -eq 1 ]; then
-            echo -e "Error: read_stdin: no input to read." >&2
+    # determine what we will read from: stdin or file
+    local input_file="$1"
+    local input_cmd="cat" # default cmd
+
+    if [[ -n "$input_file" ]]; then
+        if [[ -f "$input_file" ]]; then
+            input_cmd="cat \"$input_file\""
+        elif [[ "$IGNORE_EMPTY_INPUT" -eq 1 ]]; then
+            return 0 # the file doesnt exist
+        else
+            echo -e "ERROR: read_stdin: File '$input_file' does not exist." >&2
+            return 1
         fi
-        return 1
+    elif [[ -t 0 ]]; then
+        if [[ "$IGNORE_EMPTY_INPUT" -eq 1 ]]; then
+            return 0 # no input to read
+        else
+            echo "ERROR: read_stdin: No input to read." >&2
+            return 1
+        fi
     fi
-    
-    local input_cmd="cat"
-    if [ "$FORCE_NEWLINE" -eq 1 ]; then
-        input_cmd="(cat; printf '\n')"
+
+    # append newline if needed
+    if [[ "$FORCE_NEWLINE" -eq 1 ]]; then
+        input_cmd="($input_cmd; printf '\n')"
     fi
 
     # reads the eval result, that, in turn, cats the stdin
