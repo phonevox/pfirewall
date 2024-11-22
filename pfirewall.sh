@@ -29,6 +29,7 @@ add_flag "atp:HIDDEN" "install" "Add this script to the system path and exits" b
 add_flag "t:HIDDEN" "test" "DEBUGGING TOOL" bool # runs function run_test() and exits
 add_flag "upd:HIDDEN" "update" "Update this script to the newest version" bool
 add_flag "fu:HIDDEN" "force-update" "Force the update even if its in the same version" bool
+add_flag "e" "engine" "Firewall engine to use. Defaults as firewalld (firewalld|iptables)" str
 
 #ignores
 add_flag "idp:HIDDEN" "ignore-default-ports" "Do NOT use values from 'drops' file" bool
@@ -37,15 +38,10 @@ add_flag "idx:HIDDEN" "ignore-defaults" "Do NOT use values from 'allow' AND 'dro
 add_flag "ifs:HIDDEN" "ignore-failsafe" "Do NOT use the failsafe system" bool
 add_flag "nf:HIDDEN" "no-flush" "Do NOT flush zones" bool
 
-# to implement
-add_flag "e" "engine" "Firewall engine to use. Defaults as firewalld (firewalld|iptables)" str # this is not implemented yet
-
 set_description "This script aims to set the default firewall rules used by Phonevox, with their default IPs and ports, plus the possibility of adding extra IPs and ports."
 parse_flags "$@"
 
 # ---
-
-# ignore this --> 🗸 🞩 ↺
 
 # config-related
 DRY=false # dont change my system (default: false)
@@ -586,7 +582,6 @@ function firewalld_guarantee_zone() {
 }
 
 
-# akshually 🤓
 # this doesnt flush, but instead, drops the zone so firewalld_guarantee_zone() 
 # can create it again without any rules.
 # Usage: firewalld_flush_zone "ptrusted"
@@ -842,7 +837,6 @@ function firewalld_reload() {
 # SCRIPT MANAGEMENT, BINARY
 
 # add to system path
-# THIS IS HEAVY TO-DO
 # Usage: add_script_to_path 
 function add_script_to_path() {
     local _BIN_NAME="pfirewall"
@@ -903,7 +897,7 @@ function check_for_updates() {
     exit 0
 }
 
-# needs curl, unzip
+# needs curl and unzip installed
 function update_all_files() {
     local INSTALL_DIR=$CURRDIR
     local REPO_NAME=$REPO_NAME
