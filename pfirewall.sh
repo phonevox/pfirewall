@@ -9,7 +9,7 @@ REPO_OWNER="phonevox"
 REPO_NAME="pfirewall"
 REPO_URL="https://github.com/$REPO_OWNER/$REPO_NAME"
 ZIP_URL="$REPO_URL/archive/refs/heads/main.zip"
-APP_VERSION="v0.3.2" # honestly, I dont know how to do this better
+APP_VERSION="v0.3.3" # honestly, I dont know how to do this better
 
 source $CURRDIR/lib/useful.sh
 source $CURRDIR/lib/easyflags.sh
@@ -232,9 +232,9 @@ function iptables_do_zone_stuff() {
 
     echo "--- SETTING JAIL ORDER ---"
     # I WILL ASSUME THAT RULE NUMBER #1 IS OUR FAILSAFE. MIGHT BE WRONG. MIGHT BE RIGHT. I DONT KNOW
-    srun "iptables -I INPUT -j $TRUST_ZONE_NAME"
-    srun "iptables -I INPUT -j F2B_INPUT"
     srun "iptables -I INPUT -j $DROP_ZONE_NAME"
+    srun "iptables -I INPUT -j F2B_INPUT"
+    srun "iptables -I INPUT -j $TRUST_ZONE_NAME"
 }
 
 
