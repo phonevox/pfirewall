@@ -9,10 +9,12 @@ REPO_OWNER="phonevox"
 REPO_NAME="pfirewall"
 REPO_URL="https://github.com/$REPO_OWNER/$REPO_NAME"
 ZIP_URL="$REPO_URL/archive/refs/heads/main.zip"
-APP_VERSION="v0.2.5" # honestly, I dont know how to do this better
+APP_VERSION="v0.3.0" # honestly, I dont know how to do this better
 
 source $CURRDIR/lib/useful.sh
 source $CURRDIR/lib/easyflags.sh
+
+SYSTEM_OS=$(get_os)
 
 # ---
 
@@ -37,7 +39,7 @@ add_flag "nf:HIDDEN" "no-flush" "Do NOT flush zones" bool
 
 
 # to implement
-# add_flag "e" "engine" "Firewall engine to use (firewalld(default) or iptables)" str # this is not implemented yet
+add_flag "e" "engine" "Firewall engine to use. Defaults as firewalld (firewalld|iptables)" str # this is not implemented yet
 
 set_description "This script aims to set the default firewall rules used by Phonevox, with their default IPs and ports, plus the possibility of adding extra IPs and ports."
 parse_flags "$@"
@@ -109,8 +111,9 @@ FIREWALLD_IS_RUNNING=false
 if hasFlag "d"; then DRY=true; fi
 if hasFlag "l"; then LISTING=true; fi
 if hasFlag "v"; then VERBOSE=true; fi
-if hasFlag "V"; then VERBOSE=true; SILENT=false; fi
+if hasFlag "vv"; then VERBOSE=true; SILENT=false; fi
 if hasFlag "t"; then TEST_RUN=true; fi
+if hasFlag "e"; then ENGINE=$(getFlag "e"); fi
 if hasFlag "fu"; then FORCE_UPDATE=true; fi
 if hasFlag "nf"; then FLUSH_ZONES=false; fi
 if hasFlag "upd"; then UPDATE=true; fi
@@ -119,7 +122,7 @@ if hasFlag "idp"; then DEFAULT_DROP_PORTS=(); fi
 if hasFlag "ids"; then DEFAULT_TRUSTED_IPS=(); fi
 if hasFlag "idx"; then DEFAULT_TRUSTED_IPS=(); DEFAULT_DROP_PORTS=(); fi
 if hasFlag "atp"; then ADD_TO_PATH=true; fi
-if hasFlag "vrs"; then echo "$APP_VERSION"; exit 0; fi
+if hasFlag "V"; then echo "$APP_VERSION"; exit 0; fi
 
 # inform user about failsafe
 if ! valid_ip $FAILSAFE_USER_IP; then
@@ -178,6 +181,331 @@ function srun () {
     local USER_ACCEPTABLE_EXIT_CODES=$2
 
     run "$COMMAND >/dev/null" "$USER_ACCEPTABLE_EXIT_CODES" "$DRY" "$SILENT"
+}
+
+# ==============================================================================================================
+# IPTABLES STEPS
+
+function iptables_engine() {
+    if $LISTING; then iptables_list_configuration; fi #iptables -S
+
+    # 1. Disable fail2ban (wont do)
+    :
+
+    # 1.5. Make sure our engine is working/running. (? what does that mean in iptables)
+    # make a way to confirm the order of input chain?? confirm our exceptions are first, etc...
+
+    # 2. Create and/or confirm zones (pdrop, ptrusted)
+    echo "--- CHECKING ZONES, MIGHT TAKE A WHILE"
+    iptables_do_zone_stuff
+
+    # 3. Add the exceptions (allow ips)
+    echo "--- WHITELIST"
+    for ip in "${IPS_TO_ALLOW[@]}"; do
+        iptables_add_trusted "$ip"
+    done
+
+    # 4. Add the drops (block ports)
+    echo "--- PORT DROPS"
+    for port_type_force in "${PORTS_TO_DROP[@]}"; do
+        local _port=""
+        local _type=""
+        local _force=false
+
+        IFS=":" read -r port_type _force <<< "${port_type_force}" # isolate force option
+        IFS="/" read -r _port _type <<< "$port_type" # separate remainder as port and type
+        if [[ "$_force" == "force" || "$_force" == "true" ]]; then _force=true; fi
+
+        iptables_drop_port "$_port" "$_type" "$_force"
+
+        unset IFS
+    done
+
+    # 5. Reload to apply (? not necessary in iptables?)
+    # I WILL ASSUME THAT RULE NUMBER #1 IS OUR FAILSAFE. MIGHT BE WRONG. MIGHT BE RIGHT. I DONT KNOW
+    
+
+}
+
+
+function iptables_do_zone_stuff() {
+
+    if $IGNORE_FAILSAFE; then
+        echo "--- $(colorir vermelho "FAILSAFE IS DISABLED")"
+        srun "iptables -F"
+    elif $TRUST_FAILSAFE_IP; then
+        # add this session's IP to INPUT, as rule #1
+        if $VERBOSE; then echo "VERBOSE: As a failsafe measure, we will add this session's IP ($FAILSAFE_USER_IP) to trusted zone."; fi
+        iptables_purge_input_keep_failsafe # iptables -F but preserve our FAILSAFE rule
+    else 
+        echo "Error: FAILSAFE: We cannot trust your session's IP address ($FAILSAFE_USER_IP). If you proceed, you might lose access to the system. Guarantee you won't loose access to the system. If this is wrong, run with --ignore-failsafe."
+        exit 1
+    fi
+
+    if $FLUSH_ZONES; then
+        iptables_purge_jail "$TRUST_ZONE_NAME" # delete exception zone
+        iptables_purge_jail "$DROP_ZONE_NAME" # delete port block zone
+    else
+        echo "--- $(colorir vermelho "ZONE FLUSHING IS DISABLED")"
+    fi
+
+    iptables_guarantee_jail "$TRUST_ZONE_NAME"
+    iptables_guarantee_jail "$DROP_ZONE_NAME"
+
+    echo "--- SETTING JAIL ORDER ---"
+    srun "iptables -I INPUT 2 -j $TRUST_ZONE_NAME"
+    srun "iptables -I INPUT 3 -j F2B_INPUT"
+    srun "iptables -I INPUT 4 -j $DROP_ZONE_NAME"
+}
+
+
+function iptables_purge_input_keep_failsafe() {
+    local FAILSAFE=$FAILSAFE_USER_IP  # IP de failsafe
+
+    # adding the IP
+    if ! iptables -C INPUT -s "$FAILSAFE" -j ACCEPT 2>/dev/null; then
+        iptables_add_trusted "$FAILSAFE_USER_IP" INPUT 1
+    fi
+
+    # Lista todas as regras da cadeia INPUT com detalhes
+    rules=$(iptables -S | grep "A INPUT")
+
+    # echo "DEBUG: FAILSAFE IP: $FAILSAFE"
+    # echo -e "DEBUG: RULES: \n$rules"
+
+    # Itera sobre todas as regras da cadeia INPUT
+    while read -r line; do
+        # Pega o conteúdo da regra (ignorando os números de linha)
+        rule_content=$(echo "$line" | sed 's/^[ \t]*//')
+
+        # Remove o prefixo "-A INPUT" da regra para usar o comando -D
+        rule_to_delete=$(echo "$rule_content" | sed 's/^[-]A INPUT//')
+
+        # Verifica se a regra não corresponde ao IP de failsafe
+        if [[ "$rule_to_delete" != *"-s $FAILSAFE"* ]]; then
+            # Remove a regra usando o conteúdo modificado
+            echo "Removendo regra: $rule_content"
+            srun "iptables -D INPUT $rule_to_delete"
+        fi
+    done <<< "$rules"  # Itera sobre as regras diretamente
+
+    echo "Failsafe IP $FAILSAFE kept, and everything else in INPUT was purged."
+}
+
+
+function iptables_purge_jail() {
+    local jail=$1
+
+    # arg validation
+    if [[ -z "$jail" ]]; then
+        echo "ERROR: No jail provided for flushing."
+        exit 1
+    fi
+
+    # jail exists
+    if iptables -L "$jail" &>/dev/null; then
+        if $VERBOSE; then echo "VERBOSE: [ $jail ] Flushing"; fi
+        srun "iptables -F \"$jail\""
+
+        if $VERBOSE; then echo "VERBOSE: [ $jail ] Removing references"; fi
+        srun "iptables -D INPUT -j \"$jail\"" 
+        srun "iptables -D OUTPUT -j \"$jail\""
+        srun "iptables -D FORWARD -j \"$jail\""
+
+        if $VERBOSE; then echo "VERBOSE: [ $jail ] Deleting jail"; fi
+        srun "iptables -X \"$jail\""
+    fi
+
+}
+
+
+function iptables_guarantee_jail() {
+    local jail=$1
+
+    # arg validation
+    if [[ -z "$jail" ]]; then
+        echo "ERROR: No jail provided to guarantee."
+        exit 1
+    fi
+
+    # confirms jail exist
+    if iptables -L "$jail" &>/dev/null; then
+        if $VERBOSE; then echo "VERBOSE: [ $jail ] Jail exists"; fi
+    else
+        if $VERBOSE; then echo "VERBOSE: [ $jail ] Creating jail"; fi
+        srun "iptables -N \"$jail\""
+    fi
+}
+
+
+function iptables_add_trusted() {
+    local ip=$1
+    local chain=$TRUST_ZONE_NAME; if [[ -n "$2" ]]; then local chain=$2; fi
+    local rule_num=$3
+
+    # arg validation
+    if [[ -z "$ip" ]]; then
+        echo "ERROR: No IP provided for allowing."
+        exit 1
+    fi
+
+    # adding to trusted chain, if its not added yet
+    if ! valid_ip "$ip"; then
+        local _text_color=vermelho
+        local _text_message="[$(colorir $_text_color "✗")] $(colorir $_text_color "$chain : $ip") (bad address)"
+    elif iptables -C "$chain" -s "$ip" -j ACCEPT 2>/dev/null; then
+        local _text_color="cinza"
+        local _text_message="[$(colorir $_text_color "●")] $(colorir $_text_color "$chain : $ip") (already trusted)"
+    else
+        if [[ "$BUFFER_ADDED_IPS" =~ (^| )$ip( |$) ]]; then
+            local _text_color="cinza"
+            local _text_message="[$(colorir $_text_color "●")] $(colorir $_text_color "$chain : $ip") (previously added)"
+        else
+            srun "iptables -I $chain $rule_num -s $ip -j ACCEPT"
+            local _text_color="verde"
+            local _text_message="[$(colorir $_text_color "🗸")] $(colorir $_text_color "$chain : $ip")"
+            BUFFER_ADDED_IPS="$BUFFER_ADDED_IPS $ip"
+        fi
+    fi
+
+    echo "$_text_message"
+}
+
+
+function iptables_drop_port() {
+    local port=$1
+    local type=$2 # optional, if not present, will drop both tcp and udp
+    local zone=$DROP_ZONE_NAME
+    local force=$false # optionally force-drop the port, even if its not present
+    if [[ "$3" == "true" ]]; then local force=true; fi
+    local _port_is_open=0
+    local _text_message=""
+
+    # argument validation
+    if [ -z "$port" ]; then
+        echo "Error: No port argument sent for drop."
+        return 1
+    fi
+
+    # type validation
+    if [ -z "$type" ]; then
+        if $VERBOSE; then echo "VERBOSE: Type not set, dropping udp and tcp"; fi
+
+        if $VERBOSE; then echo "VERBOSE: Starting drop for $port/tcp. FORCE:$force"; fi
+        iptables_drop_port "$port" tcp $force
+        if $VERBOSE; then echo "VERBOSE: Starting drop for $port/udp. FORCE:$force"; fi
+        iptables_drop_port "$port" udp $force
+        return 0
+    else
+        if ! [[ "$type" =~ ^(tcp|udp|icmp|sctp|dccp|gre|ah|esp)$ ]]; then
+            local _text_color=vermelho
+            local _text_message="[$(colorir $_text_color "✗")] $(colorir $_text_color "$zone : $port/$type") (bad type)"
+            echo $_text_message
+            return 0
+        fi
+    fi
+
+    # need to check if its a port-range (examples: 20-23, 10000-20000)
+    local regex_port_range="^[0-9]+-[0-9]+$"
+    local regex_is_integer="^[0-9]+$"
+
+    if [[ "$port" =~ $regex_port_range ]]; then
+        local start_port=$(echo "$port" | cut -d '-' -f 1)
+        local end_port=$(echo "$port" | cut -d '-' -f 2)
+
+        #failsafe: confirm both are integers
+        if ! [[ "$start_port" =~ $regex_is_integer && "$end_port" =~ $regex_is_integer ]]; then
+            local _text_color=vermelho
+            local _text_message="[$(colorir $_text_color "✗")] $(colorir $_text_color "$zone : $port/$type") (bad range)"
+            echo $_text_message
+            return 0
+        fi
+
+        #failsafe: you write something like 23-20, which dont make sense. start on left, end on right
+        if [[ "$start_port" -gt "$end_port" ]]; then
+            local _text_color=vermelho
+            local _text_message="[$(colorir $_text_color "✗")] $(colorir $_text_color "$zone : $port/$type") (bad range)"
+            echo $_text_message
+            return 0
+        fi
+
+        # loop through all ports in range
+        for i in $(seq $start_port $end_port); do
+            iptables_drop_port "$i" "$type" $force
+        done
+        return 0
+    fi
+
+    # failsafe: port must be an integer
+    if ! [[ "$port" =~ $regex_is_integer ]]; then
+        # in respect for type validation, we will not display type
+        local _text_color=vermelho
+        local _text_message="[$(colorir $_text_color "✗")] $(colorir $_text_color "$port/$type") (bad port)"
+        echo $_text_message
+        return 0
+    fi
+
+    # CHORE(adrian): confirm iptables "is running"
+
+    # CHORE(adrian): there is no "port is already open / port is already closed" verification. you straight up close it.
+    # search if theres a way to do this better?
+
+    srun "iptables -A $zone -p $type --destination-port $port -j DROP"
+    local _text_color=verde
+    local _text_message="[$(colorir $_text_color "🗸")] $(colorir $_text_color "$zone : $port/$type")"
+
+    echo  "$_text_message"
+    return 0
+}
+
+
+function iptables_list_configuration() {
+    srun "iptables -S"
+    exit 0
+}
+
+# ==============================================================================================================
+# FIREWALLD STEPS
+
+# everything needed to make the script work considering the firewalld engine
+function firewalld_engine() {
+    if $LISTING; then firewalld_list_configuration; fi
+
+    # 1. Disable fail2ban
+    srun "sudo systemctl stop fail2ban"
+    srun "sudo systemctl disable fail2ban"
+
+    # 1.5. make sure our engine is working/running. this is already done in other parts of the script
+
+    # 2. Create/confirm zones
+    echo "--- CHECKING ZONES, MIGHT TAKE A WHILE"
+    firewalld_do_zone_stuff
+
+    # 3. Create exceptions
+    echo "--- WHITELIST"
+    for ip in "${IPS_TO_ALLOW[@]}"; do
+        firewalld_add_trusted "$ip"
+    done
+
+    # 4. Create drops
+    echo "--- PORT DROPS"
+    for port_type_force in "${PORTS_TO_DROP[@]}"; do
+        local _port=""
+        local _type=""
+        local _force=false
+
+        IFS=":" read -r port_type _force <<< "${port_type_force}" # isolate force option
+        IFS="/" read -r _port _type <<< "$port_type" # separate remainder as port and type
+        if [[ "$_force" == "force" || "$_force" == "true" ]]; then _force=true; fi
+
+        firewalld_drop_port "$_port" "$_type" "$_force"
+
+        unset IFS
+    done
+
+    # 5. Reload to apply changes
+    echo "--- RELOADING FIREWALLD TO APPLY CHANGES ---"
+    firewalld_reload
 }
 
 
@@ -332,7 +660,6 @@ function firewalld_add_trusted() {
 # my creativity ran out right here
 # Usage: firewall_do_zone_stuff
 function firewalld_do_zone_stuff() {
-    echo "--- CHECKING ZONES, MIGHT TAKE A WHILE"
 
     if $IGNORE_FAILSAFE; then
         echo "--- $(colorir vermelho "FAILSAFE IS DISABLED")"
@@ -504,6 +831,16 @@ function firewalld_list_configuration() {
 }
 
 
+# literally just a reload
+# Usage: firewalld_reload
+function firewalld_reload() {
+    srun "firewall-cmd --reload"
+}
+
+
+# ==============================================================================================================
+# SCRIPT MANAGEMENT, BINARY
+
 # add to system path
 # THIS IS HEAVY TO-DO
 # Usage: add_script_to_path 
@@ -538,15 +875,8 @@ function add_script_to_path() {
     exit 0
 }
 
-
-# literally just a reload
-# Usage: firewalld_reload
-function firewalld_reload() {
-    srun "firewall-cmd --reload"
-}
-
-# ---===---
-# For updates
+# ==============================================================================================================
+# VERSION CONTROL, UPDATES
 
 function check_for_updates() {
     local CURRENT_VERSION=$APP_VERSION
@@ -630,9 +960,8 @@ function version_is_greater() {
     fi
 }
 
-# ---===---
-
-# --- RUNTIME
+# ==============================================================================================================
+# RUNTIME
 
 function run_test() {
     check_for_updates
@@ -644,46 +973,16 @@ function main() {
     if $UPDATE; then check_for_updates; fi
     if $DRY; then echo "--- DRY MODE IS ENABLED"; fi
     if $VERBOSE; then echo "--- VERBOSE MODE IS ENABLED"; fi
-    if $LISTING; then firewalld_list_configuration; fi
     if $ADD_TO_PATH; then add_script_to_path; fi
 
-    # 1. Disable fail2ban
-
-    # do a check: if debian, disable fail2ban (magnusbilling)
-    # if centos/rocky/anything else, keep it enabled (maybe?)
-    srun "sudo systemctl stop fail2ban"
-    srun "sudo systemctl disable fail2ban"
-
-    # 1.5. make sure our engine is working/running. this is already done in other parts of the script
-
-    # 2. Create/confirm zones
-    firewalld_do_zone_stuff
-
-    # 3. Create exceptions
-    echo "--- WHITELIST"
-    for ip in "${IPS_TO_ALLOW[@]}"; do
-        firewalld_add_trusted "$ip"
-    done
-
-    # 4. Create drops
-    echo "--- PORT DROPS"
-    for port_type_force in "${PORTS_TO_DROP[@]}"; do
-        local _port=""
-        local _type=""
-        local _force=false
-
-        IFS=":" read -r port_type _force <<< "${port_type_force}" # isolate force option
-        IFS="/" read -r _port _type <<< "$port_type" # separate remainder as port and type
-        if [[ "$_force" == "force" || "$_force" == "true" ]]; then _force=true; fi
-
-        firewalld_drop_port "$_port" "$_type" "$_force"
-
-        unset IFS
-    done
-
-    # 5. Reload to apply changes
-    echo "--- RELOADING FIREWALLD TO APPLY CHANGES ---"
-    firewalld_reload
+    if [ "$ENGINE" == "firewalld" ]; then
+        firewalld_engine
+    elif [ "$ENGINE" == "iptables" ]; then
+        iptables_engine
+    else
+        echo "ERROR: Unknown engine: $ENGINE"
+        exit 1
+    fi
 }
 
 main

@@ -39,6 +39,14 @@ COLORS_ARRAY=(
 )
 # --- useful functions
 
+# returns the current operational system
+# call in subshell and store the echo'ed value in a variable
+# returns "ID"+"VERSION_ID" from /etc/os-release
+# Usage: OS=$(get_os)
+function get_os() {
+    echo "$(echo $(grep -oP '(?<=^ID=).+' /etc/os-release | tr -d '"') $(grep -oP '(?<=^VERSION_ID=).+' /etc/os-release | tr -d '"') | tr '[:upper:]' '[:lower:]')"
+}
+
 # color your text using subshells
 # this needs the COLORS_ARRAY array, declared outside this function
 # Usage: echo "esse texto está sem cor, mas $(colorir "verde" "esse texto aqui está com cor") "
