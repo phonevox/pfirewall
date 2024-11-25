@@ -59,7 +59,6 @@ TRUST_ZONE_NAME="ptrusted"
 DROP_ZONE_NAME="pdrop"
 IGNORE_FAILSAFE=false # ignore ip failsafe when flushing
 FAILSAFE_USER_IP=$(get_session_ip) # ip of the user ssh session that ran the command
-TRUST_FAILSAFE_IP=false # in a flush, should we trust the user's IP? (add it to the trusted list while script is in execution so we guarantee we dont get booted off mid-changes)
 
 # engine-related
 DEFAULT_ENGINE="firewalld"
@@ -81,7 +80,7 @@ done <<< "$(read_stdin "$CURRDIR/allow")" 2>&1
 DEFAULT_DROP_PORTS=()
 while IFS= read -r line; do
     if [[ -n "$line" ]]; then
-        if $VERBOSE; then echo "VERBOSE: DEFAULT_DROP_PORTS : stdin: $line"; fi
+        $VERBOSE && echo "VERBOSE: DEFAULT_DROP_PORTS : stdin: $line"
         DEFAULT_DROP_PORTS+=("$line")
     fi
 done <<< "$(read_stdin "$CURRDIR/drops")" 2>&1
@@ -104,16 +103,6 @@ if hasFlag "idx"; then DEFAULT_TRUSTED_IPS=(); DEFAULT_DROP_PORTS=(); fi
 if hasFlag "atp"; then ADD_TO_PATH=true; fi
 if hasFlag "V"; then echo "$APP_VERSION"; exit 0; fi
 
-# inform user about failsafe
-if ! valid_ip $FAILSAFE_USER_IP; then
-    echo "WARNING: $(colorir vermelho "FAILSAFE DISABLED")! Found session IP: $FAILSAFE_USER_IP"
-    echo "WARNING: $(colorir vermelho "We cannot trust the found IP address, as it is in a bad format.")"
-    TRUST_FAILSAFE_IP=false
-else
-    if $VERBOSE; then echo "VERBOSE: $(colorir verde "FAILSAFE is enabled"). Session IP: $FAILSAFE_USER_IP"; fi
-    TRUST_FAILSAFE_IP=true
-fi
-
 # obtaining user IPs from flag
 IPS_TO_ALLOW=()
 if hasFlag "s"; then
@@ -122,7 +111,7 @@ if hasFlag "s"; then
         if valid_ip "$ip"; then
             IPS_TO_ALLOW+=($ip)
         else
-            if $VERBOSE; then echo "VERBOSE: Invalid IP in user input: '$ip'"; fi
+            $VERBOSE && echo "VERBOSE: Invalid IP in user input: '$ip'"
         fi
     done
     unset IFS
@@ -137,7 +126,7 @@ if hasFlag "p"; then
         if [[ -n "$port" ]]; then
             PORTS_TO_DROP+=($port)
         else
-            if $VERBOSE; then echo "VERBOSE: Invalid port in user input: '$port'"; fi
+            $VERBOSE && echo "VERBOSE: Invalid port in user input: '$port'"
         fi
     done
     unset IFS
@@ -148,7 +137,7 @@ PORTS_TO_DROP+=("${DEFAULT_DROP_PORTS[@]}")
 # read_stdin comes from lib/useful.sh
 while IFS= read -r line; do
     if [[ -n "$line" ]]; then
-        if $VERBOSE; then echo "VERBOSE: stdin: $line"; fi
+        $VERBOSE && echo "VERBOSE: stdin: $line"
         IPS_TO_ALLOW+=("$line")
     fi
 done <<< "$(read_stdin)" 2>&1 # i dont think this input redirect does shit LOL
@@ -167,7 +156,6 @@ function srun () {
 # IPTABLES STEPS
 
 function iptables_engine() {
-    if $LISTING; then iptables_list_configuration; fi #iptables -S
 
     # 1. Disable fail2ban (wont do)
     :
@@ -208,18 +196,21 @@ function iptables_engine() {
 
 function iptables_do_zone_stuff() {
 
-    if $IGNORE_FAILSAFE; then
-        echo "--- $(colorir vermelho "FAILSAFE IS DISABLED")"
-        srun "iptables -F"
-    elif $TRUST_FAILSAFE_IP; then
-        # add this session's IP to INPUT, as rule #1
-        if $VERBOSE; then echo "VERBOSE: As a failsafe measure, we will add this session's IP ($FAILSAFE_USER_IP) to trusted zone."; fi
-        iptables_purge_input_keep_failsafe # iptables -F but preserve our FAILSAFE rule
-    else 
+    # failsafe
+    if [[ ! -n "$FAILSAFE_USER_IP" ]]; then
         echo "Error: FAILSAFE: We cannot trust your session's IP address ($FAILSAFE_USER_IP). If you proceed, you might lose access to the system. Guarantee you won't loose access to the system. If this is wrong, run with --ignore-failsafe."
         exit 1
     fi
 
+    if ! $IGNORE_FAILSAFE; then
+        $VERBOSE && echo "VERBOSE: As a failsafe measure, we will add this session's IP ($FAILSAFE_USER_IP) to trusted zone."
+        iptables_purge_input_keep_failsafe 
+    else
+        echo "--- $(colorir vermelho "FAILSAFE IS DISABLED")"
+        srun "iptables -F"
+    fi
+
+    # flush
     if $FLUSH_ZONES; then
         iptables_purge_jail "$TRUST_ZONE_NAME" # delete exception zone
         iptables_purge_jail "$DROP_ZONE_NAME" # delete port block zone
@@ -227,12 +218,13 @@ function iptables_do_zone_stuff() {
         echo "--- $(colorir vermelho "ZONE FLUSHING IS DISABLED")"
     fi
 
+    # create
     iptables_guarantee_jail "$TRUST_ZONE_NAME"
     iptables_guarantee_jail "$DROP_ZONE_NAME"
 
+    # set order
     echo "--- SETTING JAIL ORDER ---"
     iptables_set_jail_order
-    # I WILL ASSUME THAT RULE NUMBER #1 IS OUR FAILSAFE. MIGHT BE WRONG. MIGHT BE RIGHT. I DONT KNOW
 
 }
 
@@ -240,11 +232,11 @@ function iptables_do_zone_stuff() {
 function iptables_purge_input_keep_failsafe() {
     local FAILSAFE=$FAILSAFE_USER_IP  # IP de failsafe
 
-    if $VERBOSE; then echo "VERBOSE: PURGING INPUT CHAIN"; fi
+    $VERBOSE && echo "VERBOSE: PURGING INPUT CHAIN"
 
     # adding the IP
-    if ! iptables -C INPUT -s "$FAILSAFE" -j ACCEPT 2>/dev/null; then
-        iptables_add_trusted "$FAILSAFE" INPUT 1
+    if ! iptables -S INPUT | grep -qE "^-A INPUT -s $FAILSAFE/32.*-j ACCEPT" >/dev/null; then
+        srun "iptables -I INPUT -s $FAILSAFE -j ACCEPT -m comment --comment \"FAILSAFE FROM PFIREWALL\""
     fi
 
     # current rules on INPUT chain
@@ -253,6 +245,8 @@ function iptables_purge_input_keep_failsafe() {
     # echo "DEBUG: FAILSAFE IP: $FAILSAFE"
     # echo -e "DEBUG: RULES: \n$rules"
 
+    local FAILSAFE_FOUND=false
+    local DELETE_REMAINING=false
     while read -r line; do
 
         # get one of the rules
@@ -261,16 +255,50 @@ function iptables_purge_input_keep_failsafe() {
         # removes "-A INPUT" prefix (for eventual -D command)
         rule_to_delete=$(echo "$rule_content" | sed 's/^[-]A INPUT//')
 
-        # checks if its not the failsafe ip
-        if [[ "$rule_to_delete" != *"-s $FAILSAFE"* ]]; then
-
-            # deletes the rule (this is why we had to prune off "-A INPUT")
-            if $VERBOSE; then echo "VERBOSE: Deleting rule '$rule_content'"; fi
+        # we are supposed to delete everything unconditionally
+        if $DELETE_REMAINING; then
+            $VERBOSE && echo "VERBOSE: Deleting remaining rule '$rule_content'"
             srun "iptables -D INPUT $rule_to_delete"
+            continue
         fi
+
+        # rule we are checking contains the failsafe ip
+        if [[ "$rule_to_delete" == *"-s $FAILSAFE"* ]]; then
+
+            # its an accept rule: we found our target that we cant delete
+            if [[ "$rule_to_delete" == *"-j ACCEPT"* ]]; then
+                FAILSAFE_FOUND=true
+                DELETE_REMAINING=true
+            fi
+
+            # how?!?!?
+            if [[ "$rule_to_delete" == *"-j DROP"* ]]; then
+                echo "WARNING: This is not supposed to happen. How are you accessing the system if you are dropped?"
+                # anyways, delete this
+                srun "iptables -D INPUT $rule_to_delete"
+            fi
+
+            # what is this
+            if [[ "$rule_to_delete" == *"-j FORWARD"* ]]; then
+                echo "WARNING: The FAILSAFE IP was found in a FORWARD rule."
+                # i dont know what this means, lets just delete and keep searching for accepts
+                srun "iptables -D INPUT $rule_to_delete"
+            fi
+
+            continue
+        fi
+
+        # generic rule, just delete it
+        $VERBOSE && echo "VERBOSE: Deleting rule '$rule_content'"
+        srun "iptables -D INPUT $rule_to_delete"
+
     done <<< "$rules" # iterate over the rules we found
 
-    if $VERBOSE; then echo "VERBOSE: FAILSAFE IP $FAILSAFE kept, and everything else in INPUT was purged."; fi
+    if $FAILSAFE_FOUND; then
+        $VERBOSE && echo "VERBOSE: FAILSAFE $FAILSAFE preserved and INPUT purged."
+    else
+        $VERBOSE && echo "VERBOSE: Strange... FAILSAFE $FAILSAFE was not found in the INPUT chain."
+    fi
 }
 
 
@@ -285,10 +313,10 @@ function iptables_purge_jail() {
 
     # jail exists
     if iptables -L "$jail" &>/dev/null; then
-        if $VERBOSE; then echo "VERBOSE: [ $jail ] Flushing"; fi
+        $VERBOSE && echo "VERBOSE: [ $jail ] Flushing"
         srun "iptables -F \"$jail\""
 
-        if $VERBOSE; then echo "VERBOSE: [ $jail ] Removing references"; fi
+        $VERBOSE && echo "VERBOSE: [ $jail ] Removing references"
         
         # INPUT JAIL
         if iptables -C INPUT -j "$jail" &>/dev/null; then
@@ -305,7 +333,7 @@ function iptables_purge_jail() {
             srun "iptables -D FORWARD -j \"$jail\""
         fi
 
-        if $VERBOSE; then echo "VERBOSE: [ $jail ] Deleting jail"; fi
+        $VERBOSE && echo "VERBOSE: [ $jail ] Deleting jail"
         srun "iptables -X \"$jail\""
     fi
 
@@ -323,9 +351,9 @@ function iptables_guarantee_jail() {
 
     # confirms jail exist
     if iptables -L "$jail" &>/dev/null; then
-        if $VERBOSE; then echo "VERBOSE: [ $jail ] Jail exists"; fi
+        $VERBOSE && echo "VERBOSE: [ $jail ] Jail exists"
     else
-        if $VERBOSE; then echo "VERBOSE: [ $jail ] Creating jail"; fi
+        $VERBOSE && echo "VERBOSE: [ $jail ] Creating jail"
         srun "iptables -N \"$jail\""
     fi
 }
@@ -382,11 +410,11 @@ function iptables_drop_port() {
 
     # type validation
     if [ -z "$type" ]; then
-        if $VERBOSE; then echo "VERBOSE: Type not set, dropping udp and tcp"; fi
+        $VERBOSE && echo "VERBOSE: Type not set, dropping udp and tcp"
 
-        if $VERBOSE; then echo "VERBOSE: Starting drop for $port/tcp. FORCE:$force"; fi
+        $VERBOSE && echo "VERBOSE: Starting drop for $port/tcp. FORCE:$force"
         iptables_drop_port "$port" tcp $force
-        if $VERBOSE; then echo "VERBOSE: Starting drop for $port/udp. FORCE:$force"; fi
+        $VERBOSE && echo "VERBOSE: Starting drop for $port/udp. FORCE:$force"
         iptables_drop_port "$port" udp $force
         return 0
     else
@@ -460,18 +488,26 @@ function iptables_list_configuration() {
 
 function iptables_set_jail_order() {
 
-    # preciso pegar todas as regras atuais e suas posições
-    # tem dois cenários: as regras vão estar limpas
-    # ou vamos ter o IP do failsafe em primeiro lugar
-    echo $(iptables --line-numbers -nL INPUT)
-    echo $FAILSAFE_USER_IP
-    echo $(who am i)
+    # https://www.youtube.com/watch?v=4XKGfziuw5c
 
+    # first rule number that mentions our failsafe ip. hopefully as an ACCEPT rule
+    local FAILSAFE_POS=$(iptables --line-numbers -nL INPUT | awk 'NR>2 {print $1, $2, $5}' | egrep -m 1 "$FAILSAFE_USER_IP" | awk '{print $1}') # returns the first rule that mentions our failsafe ip
+    local STARTING_RULE_POS=1
+
+    # checking if the subshell returned an integer and defining the starting rule to the failsafe position plus one
+    if [[ "$FAILSAFE_POS" =~ ^[0-9]+$ ]]; then local STARTING_RULE_POS=$((FAILSAFE_POS + 1)); fi
+
+    if $VERBOSE; then 
+        echo "VERBOSE: Position of the first FAILSAFE rule on iptables: $FAILSAFE_POS"
+        echo "VERBOSE: Calculated position for the first jail: $STARTING_RULE_POS"
+    fi
+
+    srun "iptables -I INPUT $STARTING_RULE_POS -j $TRUST_ZONE_NAME"
+    srun "iptables -I INPUT $((STARTING_RULE_POS + 1)) -j F2B_INPUT"
+    srun "iptables -I INPUT $((STARTING_RULE_POS + 2)) -j $DROP_ZONE_NAME"
+    
     exit 1
 
-    srun "iptables -I INPUT 1 -j $TRUST_ZONE_NAME"
-    srun "iptables -I INPUT 2 -j F2B_INPUT"
-    srun "iptables -I INPUT 3 -j $DROP_ZONE_NAME"
 }
 
 # ==============================================================================================================
@@ -530,11 +566,11 @@ function firewalld_check_status() {
     # echo "$i: RUNNING: $FIREWALLD_IS_RUNNING"
     # echo "$i: ENABLED: $FIREWALLD_IS_ENABLED"
     if $FIREWALLD_IS_RUNNING; then
-        if $VERBOSE; then echo "VERBOSE: Service firewalld is running. Early return."; fi
+        $VERBOSE && echo "VERBOSE: Service firewalld is running. Early return."
         return 0
     fi
 
-    if $VERBOSE; then echo "VERBOSE: Starting singleton FIREWALLD_IS_RUNNING"; fi
+    $VERBOSE && echo "VERBOSE: Starting singleton FIREWALLD_IS_RUNNING"
 
     FIREWALLD_IS_ENABLED=false
     FIREWALLD_IS_RUNNING=false
@@ -575,21 +611,21 @@ function firewalld_guarantee_zone() {
 
     # checking if we should create the zone
     if ! firewall-cmd --permanent --get-zones | grep -qw "$zone"; then
-        if $VERBOSE; then echo "VERBOSE: Zone '$zone' does not exist. Creating..."; fi
+        $VERBOSE && echo "VERBOSE: Zone '$zone' does not exist. Creating..."
         srun "firewall-cmd --permanent --new-zone=$zone" # if it fails, it will exit bc we only allow exit code 0
         if [ -n "$zone_target" ]; then
             srun "firewall-cmd --permanent --zone=$zone --set-target=$zone_target"
         fi
     else
-        if $VERBOSE; then echo "VERBOSE: Zone '$zone' already exists."; fi
+        $VERBOSE && echo "VERBOSE: Zone '$zone' already exists."
 
         # Check if the zone target is as expected
         local current_target=$(firewall-cmd --permanent --zone=$zone --get-target)
         if [ "$current_target" != "$zone_target" ]; then
-            if $VERBOSE; then echo "VERBOSE: Zone '$zone' target is '$current_target', setting to '$zone_target'..."; fi
+            $VERBOSE && echo "VERBOSE: Zone '$zone' target is '$current_target', setting to '$zone_target'..."
             srun "firewall-cmd --permanent --zone=$zone --set-target=$zone_target"
         else
-            if $VERBOSE; then echo "VERBOSE: Zone '$zone' already has the target '$zone_target'."; fi
+            $VERBOSE && echo "VERBOSE: Zone '$zone' already has the target '$zone_target'."
         fi
     fi
 
@@ -616,7 +652,7 @@ function firewalld_flush_zone() {
 
     # deleting zone to consider "flush"
     if firewall-cmd --permanent --get-zones | grep -qw "$zone"; then
-        if $VERBOSE; then echo "VERBOSE: Flushing zone '$zone'"; fi
+        $VERBOSE && echo "VERBOSE: Flushing zone '$zone'"
         srun "firewall-cmd --permanent --delete-zone=\"$zone\""
     fi
 }
@@ -672,18 +708,20 @@ function firewalld_add_trusted() {
 # Usage: firewall_do_zone_stuff
 function firewalld_do_zone_stuff() {
 
-    if $IGNORE_FAILSAFE; then
-        echo "--- $(colorir vermelho "FAILSAFE IS DISABLED")"
-    elif $TRUST_FAILSAFE_IP; then
-        # we can trust this ip, lets add it to the trusted zone (the one we wont mess with)
-        # and keep running the script
-        if $VERBOSE; then echo "VERBOSE: As a failsafe measure, we will add this session's IP ($FAILSAFE_USER_IP) to trusted zone."; fi
-        firewalld_add_trusted "$FAILSAFE_USER_IP" trusted
-    else 
+    if [[ ! -n "$FAILSAFE_USER_IP" ]]; then
         echo "Error: FAILSAFE: We cannot trust your session's IP address ($FAILSAFE_USER_IP). If you proceed, you might lose access to the system. Guarantee you won't loose access to the system. If this is wrong, run with --ignore-failsafe."
         exit 1
     fi
 
+    # failsafe
+    if ! $IGNORE_FAILSAFE; then
+        $VERBOSE && echo "VERBOSE: As a failsafe measure, we will add this session's IP ($FAILSAFE_USER_IP) to trusted zone."
+        firewalld_add_trusted "$FAILSAFE_USER_IP" trusted
+    else
+        echo "--- $(colorir vermelho "FAILSAFE MODE IS DISABLED")"
+    fi 
+
+    # flush
     if $FLUSH_ZONES; then
         firewalld_flush_zone "$TRUST_ZONE_NAME"
         firewalld_flush_zone "$DROP_ZONE_NAME"
@@ -692,9 +730,12 @@ function firewalld_do_zone_stuff() {
         echo "--- $(colorir vermelho "ZONE FLUSHING IS DISABLED")"
     fi
 
+    # create zones
     firewalld_guarantee_zone "$TRUST_ZONE_NAME" "ACCEPT"
     firewalld_guarantee_zone "$DROP_ZONE_NAME" "ACCEPT"
-    firewalld_reload # apply creation
+    
+    # apply
+    firewalld_reload
 }
 
 
@@ -722,11 +763,11 @@ function firewalld_drop_port() {
 
     # type validation
     if [ -z "$type" ]; then
-        if $VERBOSE; then echo "VERBOSE: Type not set, dropping udp and tcp"; fi
+        $VERBOSE && echo "VERBOSE: Type not set, dropping udp and tcp"
 
-        if $VERBOSE; then echo "VERBOSE: Starting drop for $port/tcp. FORCE:$force"; fi
+        $VERBOSE && echo "VERBOSE: Starting drop for $port/tcp. FORCE:$force"
         firewalld_drop_port "$port" tcp $force
-        if $VERBOSE; then echo "VERBOSE: Starting drop for $port/udp. FORCE:$force"; fi
+        $VERBOSE && echo "VERBOSE: Starting drop for $port/udp. FORCE:$force"
         firewalld_drop_port "$port" udp $force
         return 0
     else
@@ -784,7 +825,7 @@ function firewalld_drop_port() {
     # obtaining port status
     firewall-cmd --zone=$zone --list-rich-rules | grep -qi "$port.*$type.*reject$" && _port_is_open=false || _port_is_open=true
 
-    # if $VERBOSE; then echo "VERBOSE: Port $port/$type open? $_port_is_open"; fi
+    # $VERBOSE && echo "VERBOSE: Port $port/$type open? $_port_is_open"
 
     if ! $_port_is_open; then
         # port is not open: its already dropped or not added yet
@@ -980,20 +1021,25 @@ function run_test() {
 }
 
 function main() {
-    if $TEST_RUN; then run_test; fi
-    if $UPDATE; then check_for_updates; fi
-    if $DRY; then echo "--- DRY MODE IS ENABLED"; fi
-    if $VERBOSE; then echo "--- VERBOSE MODE IS ENABLED"; fi
-    if $ADD_TO_PATH; then add_script_to_path; fi
+    $TEST_RUN && run_test
+    $UPDATE && check_for_updates
+    $DRY && echo "--- DRY MODE IS ENABLED"
+    $VERBOSE && echo "--- VERBOSE MODE IS ENABLED"
+    $ADD_TO_PATH && add_script_to_path
+    if [[ "$ENGINE" == "iptables" && "$LISTING" == "true" ]]; then iptables_list_configuration; fi #iptables -S
+    if [[ "$ENGINE" == "firewalld" && "$LISTING" == "true" ]]; then firewalld_list_configuration; fi 
 
-    if [ "$ENGINE" == "firewalld" ]; then
-        firewalld_engine
-    elif [ "$ENGINE" == "iptables" ]; then
-        iptables_engine
-    else
-        echo "ERROR: Unknown engine: $ENGINE"
-        exit 1
+    # notify about failsafe if needed
+    if [[ ! -n "$FAILSAFE_USER_IP" && "$IGNORE_FAILSAFE" != "true" ]]; then
+        echo "WARNING: $(colorir vermelho "FAILSAFE DISABLED")!)"
+        echo "WARNING: $(colorir vermelho "$(get_session_ip 1)")" # extra debug info
     fi
+
+    # run the script on the correct engine
+    [ "$ENGINE" == "firewalld" ] && firewalld_engine
+    [ "$ENGINE" == "iptables" ] && iptables_engine
+    echo "ERROR: Unknown engine: $ENGINE"
+    exit 1
 }
 
 main
