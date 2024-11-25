@@ -505,9 +505,6 @@ function iptables_set_jail_order() {
     srun "iptables -I INPUT $STARTING_RULE_POS -j $TRUST_ZONE_NAME"
     srun "iptables -I INPUT $((STARTING_RULE_POS + 1)) -j F2B_INPUT"
     srun "iptables -I INPUT $((STARTING_RULE_POS + 2)) -j $DROP_ZONE_NAME"
-    
-    exit 1
-
 }
 
 # ==============================================================================================================
