@@ -58,7 +58,7 @@ FLUSH_ZONES=true # flush all rules added from this script (default: true)
 TRUST_ZONE_NAME="ptrusted"
 DROP_ZONE_NAME="pdrop"
 IGNORE_FAILSAFE=false # ignore ip failsafe when flushing
-FAILSAFE_USER_IP=$(echo $SSH_CLIENT | awk '{print $1}') # ip of the user ssh session that ran the command
+FAILSAFE_USER_IP=$(get_session_ip) # ip of the user ssh session that ran the command
 TRUST_FAILSAFE_IP=false # in a flush, should we trust the user's IP? (add it to the trusted list while script is in execution so we guarantee we dont get booted off mid-changes)
 
 # engine-related
@@ -231,10 +231,9 @@ function iptables_do_zone_stuff() {
     iptables_guarantee_jail "$DROP_ZONE_NAME"
 
     echo "--- SETTING JAIL ORDER ---"
+    iptables_set_jail_order
     # I WILL ASSUME THAT RULE NUMBER #1 IS OUR FAILSAFE. MIGHT BE WRONG. MIGHT BE RIGHT. I DONT KNOW
-    srun "iptables -I INPUT -j $DROP_ZONE_NAME"
-    srun "iptables -I INPUT -j F2B_INPUT"
-    srun "iptables -I INPUT -j $TRUST_ZONE_NAME"
+
 }
 
 
@@ -456,6 +455,23 @@ function iptables_drop_port() {
 function iptables_list_configuration() {
     srun "iptables -S"
     exit 0
+}
+
+
+function iptables_set_jail_order() {
+
+    # preciso pegar todas as regras atuais e suas posições
+    # tem dois cenários: as regras vão estar limpas
+    # ou vamos ter o IP do failsafe em primeiro lugar
+    echo $(iptables --line-numbers -nL INPUT)
+    echo $FAILSAFE_USER_IP
+    echo $(who am i)
+
+    exit 1
+
+    srun "iptables -I INPUT 1 -j $TRUST_ZONE_NAME"
+    srun "iptables -I INPUT 2 -j F2B_INPUT"
+    srun "iptables -I INPUT 3 -j $DROP_ZONE_NAME"
 }
 
 # ==============================================================================================================

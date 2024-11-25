@@ -298,3 +298,30 @@ function valid_ip() {
         return 1
     fi
 }
+
+
+# this is meant to be used as subshell command
+# Usage: IP=$(get_session_ip)
+function get_session_ip() {
+    local DEBUG_MODE=0; if [[ -n "$1" ]]; then DEBUG_MODE=1; fi 
+    local DEBUG_TEXT=""    
+    local SESSION_IP=""
+    local RETURN=""
+
+    # from ssh client
+    local FROM_SSHCLIENT=$(echo $SSH_CLIENT | awk '{print $1}')
+    if [[ -n "$FROM_SSHCLIENT" ]]; then SESSION_IP=$FROM_SSHCLIENT; fi
+
+    # from "who" cmd
+    local FROM_WHO=$(who -m | awk '{print $NF}' | tr -d '()')
+    if [[ -n "$FROM_WHO" ]]; then SESSION_IP=$FROM_WHO; fi
+
+    # validating
+    if valid_ip "$SESSION_IP"; then RETURN=$SESSION_IP; fi
+
+    # debug information if needed
+    local DEBUG_TEXT=" (DEBUG INFO // FROM_SSHCLIENT=$FROM_SSHCLIENT, FROM_WHO=$FROM_WHO, SESSION_IP=$SESSION_IP)"
+
+    if [[ "$DEBUG_MODE" -eq 1 ]]; then RETURN="$RETURN$DEBUG_TEXT"; fi
+    echo $RETURN
+}
