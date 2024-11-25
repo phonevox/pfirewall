@@ -9,7 +9,7 @@ REPO_OWNER="phonevox"
 REPO_NAME="pfirewall"
 REPO_URL="https://github.com/$REPO_OWNER/$REPO_NAME"
 ZIP_URL="$REPO_URL/archive/refs/heads/main.zip"
-APP_VERSION="v0.3.5" # honestly, I dont know how to do this better
+APP_VERSION="v0.3.6" # honestly, I dont know how to do this better
 
 source $CURRDIR/lib/useful.sh
 source $CURRDIR/lib/easyflags.sh
@@ -191,6 +191,7 @@ function iptables_engine() {
 
     # 5. Reload to apply (? not necessary in iptables?)
     echo "--- ALL DONE!"
+    exit 0
 }
 
 
@@ -551,6 +552,7 @@ function firewalld_engine() {
     firewalld_reload
 
     echo "--- ALL DONE!"
+    exit 0
 }
 
 
