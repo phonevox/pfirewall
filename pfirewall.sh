@@ -9,7 +9,7 @@ REPO_OWNER="phonevox"
 REPO_NAME="pfirewall"
 REPO_URL="https://github.com/$REPO_OWNER/$REPO_NAME"
 ZIP_URL="$REPO_URL/archive/refs/heads/main.zip"
-APP_VERSION="v0.3.6" # honestly, I dont know how to do this better
+APP_VERSION="v0.4.0" # honestly, I dont know how to do this better
 
 source $CURRDIR/lib/useful.sh
 source $CURRDIR/lib/easyflags.sh
@@ -494,6 +494,7 @@ function iptables_set_jail_order() {
     # first rule number that mentions our failsafe ip. hopefully as an ACCEPT rule
     local FAILSAFE_POS=$(iptables --line-numbers -nL INPUT | awk 'NR>2 {print $1, $2, $5}' | egrep -m 1 "$FAILSAFE_USER_IP" | awk '{print $1}') # returns the first rule that mentions our failsafe ip
     local STARTING_RULE_POS=1
+    local CURRENT_RULE_POS=$STARTING_RULE_POS
 
     # checking if the subshell returned an integer and defining the starting rule to the failsafe position plus one
     if [[ "$FAILSAFE_POS" =~ ^[0-9]+$ ]]; then local STARTING_RULE_POS=$((FAILSAFE_POS + 1)); fi
@@ -503,9 +504,23 @@ function iptables_set_jail_order() {
         echo "VERBOSE: Calculated position for the first jail: $STARTING_RULE_POS"
     fi
 
-    srun "iptables -I INPUT $STARTING_RULE_POS -j $TRUST_ZONE_NAME"
-    srun "iptables -I INPUT $((STARTING_RULE_POS + 1)) -j F2B_INPUT"
-    srun "iptables -I INPUT $((STARTING_RULE_POS + 2)) -j $DROP_ZONE_NAME"
+    # if there are no F2B_INPUT group, we need to put all the "f2b_" rules instead!
+    if ! iptables -L F2B_INPUT 2>&1 >/dev/null; then
+        ALL_FTB_RULES=$(iptables -nL | grep -Po "(?<=Chain )f2b.*?(?= )")
+
+        srun "iptables -I INPUT $STARTING_RULE_POS -j $TRUST_ZONE_NAME"
+        for rule in $ALL_FTB_RULES; do
+            CURRENT_RULE_POS=$((CURRENT_RULE_POS + 1))
+            srun "iptables -I INPUT $((CURRENT_RULE_POS)) -j $rule"
+        done
+        srun "iptables -I INPUT $((CURRENT_RULE_POS + 1)) -j $DROP_ZONE_NAME"
+
+    else
+        srun "iptables -I INPUT $STARTING_RULE_POS -j $TRUST_ZONE_NAME"
+        srun "iptables -I INPUT $((STARTING_RULE_POS + 1)) -j F2B_INPUT"
+        srun "iptables -I INPUT $((STARTING_RULE_POS + 2)) -j $DROP_ZONE_NAME"
+    fi
+
 }
 
 # ==============================================================================================================
