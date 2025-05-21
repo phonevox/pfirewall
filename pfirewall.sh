@@ -9,7 +9,7 @@ REPO_OWNER="phonevox"
 REPO_NAME="pfirewall"
 REPO_URL="https://github.com/$REPO_OWNER/$REPO_NAME"
 ZIP_URL="$REPO_URL/archive/refs/heads/main.zip"
-APP_VERSION="v0.4.1" # honestly, I dont know how to do this better
+APP_VERSION="v0.4.2" # honestly, I dont know how to do this better
 
 source $CURRDIR/lib/useful.sh
 source $CURRDIR/lib/easyflags.sh
@@ -198,7 +198,7 @@ function iptables_engine() {
 function iptables_do_zone_stuff() {
 
     # failsafe
-    if [[ ! -n "$FAILSAFE_USER_IP" ]]; then
+    if [[ ! -n "$FAILSAFE_USER_IP" && ! $IGNORE_FAILSAFE ]]; then
         echo "Error: FAILSAFE: We cannot trust your session's IP address ($FAILSAFE_USER_IP). If you proceed, you might lose access to the system. Guarantee you won't loose access to the system. If this is wrong, run with --ignore-failsafe."
         exit 1
     fi
