@@ -246,6 +246,11 @@ function iptables_purge_input_keep_failsafe() {
     # echo "DEBUG: FAILSAFE IP: $FAILSAFE"
     # echo -e "DEBUG: RULES: \n$rules"
 
+    if ! $FLUSH_ZONES; then
+        $VERBOSE $$ echo "VERBOSE: Zone flushing is disabled, so we are returning early in iptables_purge_input_keep_failsafe"
+        return
+    fi
+
     local FAILSAFE_FOUND=false
     local DELETE_REMAINING=false
     while read -r line; do
