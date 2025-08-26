@@ -9,7 +9,7 @@ REPO_OWNER="phonevox"
 REPO_NAME="pfirewall"
 REPO_URL="https://github.com/$REPO_OWNER/$REPO_NAME"
 ZIP_URL="$REPO_URL/archive/refs/heads/main.zip"
-APP_VERSION="v0.4.2" # honestly, I dont know how to do this better
+APP_VERSION="v0.4.3" # honestly, I dont know how to do this better
 
 source $CURRDIR/lib/useful.sh
 source $CURRDIR/lib/easyflags.sh
@@ -987,6 +987,10 @@ function update_all_files() {
 
     echo "- Unzipping '$tmp_dir/repo.zip' to '$tmp_dir'"
     srun "unzip -qo \"$tmp_dir/repo.zip\" -d \"$tmp_dir\""
+
+    echo "- Copying allow and drops to '$tmp_dir/$REPO_NAME-main'"
+    srun "cp \"$CURRDIR/allow\" \"$tmp_dir/$REPO_NAME-main/allow\""
+    srun "cp \"$CURRDIR/drops\" \"$tmp_dir/$REPO_NAME-main/drops\""
 
     echo "- Copying files from '$tmp_dir/$REPO_NAME-main' to '$INSTALL_DIR'"
     srun "cp -r \"$tmp_dir/$REPO_NAME-main/\"* \"$INSTALL_DIR/\""
