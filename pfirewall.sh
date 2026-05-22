@@ -9,7 +9,7 @@ REPO_OWNER="phonevox"
 REPO_NAME="pfirewall"
 REPO_URL="https://github.com/$REPO_OWNER/$REPO_NAME"
 ZIP_URL="$REPO_URL/archive/refs/heads/main.zip"
-APP_VERSION="v0.5.0" # honestly, I dont know how to do this better
+APP_VERSION="v0.5.1" # honestly, I dont know how to do this better
 
 source $CURRDIR/lib/useful.sh
 source $CURRDIR/lib/easyflags.sh
@@ -30,7 +30,7 @@ add_flag "t:HIDDEN" "test" "DEBUGGING TOOL" bool # runs function run_test() and 
 add_flag "upd:HIDDEN" "update" "Update this script to the newest version" bool
 add_flag "fu:HIDDEN" "force-update" "Force the update even if its in the same version" bool
 add_flag "e" "engine" "Firewall engine to use. Defaults as firewalld (firewalld|iptables)" str
-add_flag "pa" "port-allowlist" "Drop ALL ports, only allowing ports from 'port_allow' file" bool
+add_flag "dm" "drops-mode" "Use 'drops' file to block specific ports instead of allowlisting (legacy)" bool
 
 #ignores
 add_flag "idp:HIDDEN" "ignore-default-ports" "Do NOT use values from 'drops' file" bool
@@ -54,7 +54,7 @@ UPDATE=false # update this script to the newest version
 FORCE_UPDATE=false # force update even if its the same version
 TEST_RUN=false
 FLUSH_ZONES=true # flush all rules added from this script (default: true)
-PORT_ALLOWLIST_MODE=false # drop all ports, allow only ports from port_allow file (default: false)
+PORT_DROP_MODE=false # use 'drops' file to block specific ports
 
 # zone-related
 TRUST_ZONE_NAME="ptrusted"
@@ -105,7 +105,7 @@ if hasFlag "t"; then TEST_RUN=true; fi
 if hasFlag "e"; then ENGINE=$(getFlag "e"); fi
 if hasFlag "fu"; then FORCE_UPDATE=true; fi
 if hasFlag "nf"; then FLUSH_ZONES=false; fi
-if hasFlag "pa"; then PORT_ALLOWLIST_MODE=true; fi
+if hasFlag "dm"; then PORT_DROP_MODE=true; fi
 if hasFlag "upd"; then UPDATE=true; fi
 if hasFlag "ifs"; then IGNORE_FAILSAFE=true; fi
 if hasFlag "idp"; then DEFAULT_DROP_PORTS=(); fi
@@ -187,19 +187,8 @@ function iptables_engine() {
     done
 
     # 4. Add the drops (block ports) or set up allowlist
-    if $PORT_ALLOWLIST_MODE; then
-        echo "--- PORT ALLOWLIST (drop all, allow only specific ports)"
-        for port_type in "${PORTS_TO_ALLOW[@]}"; do
-            local _port=""
-            local _type=""
-
-            IFS="/" read -r _port _type <<< "$port_type"
-            iptables_allow_port "$_port" "$_type"
-
-            unset IFS
-        done
-        srun "iptables -A $DROP_ZONE_NAME -j DROP"
-    else
+    if $PORT_DROP_MODE; then
+        # LEGACY: only drop whatever came from "drops" file or from commandline
         echo "--- PORT DROPS"
         for port_type_force in "${PORTS_TO_DROP[@]}"; do
             local _port=""
@@ -214,6 +203,20 @@ function iptables_engine() {
 
             unset IFS
         done
+    else
+        # NEW: drop all, allow only specific ports
+        echo "--- PORT ALLOWLIST (drop all, allow only specific ports)"
+        for port_type in "${PORTS_TO_ALLOW[@]}"; do
+            local _port=""
+            local _type=""
+
+            IFS="/" read -r _port _type <<< "$port_type"
+            iptables_allow_port "$_port" "$_type"
+
+            unset IFS
+        done
+        srun "iptables -A $DROP_ZONE_NAME -j DROP"
+        
     fi
 
     # 5. Reload to apply (? not necessary in iptables?)
@@ -231,7 +234,7 @@ function iptables_do_zone_stuff() {
     fi
 
     if ! $IGNORE_FAILSAFE; then
-        $VERBOSE && echo "VERBOSE: As a failsafe measure, we will add this session's IP ($FAILSAFE_USER_IP) to trusted zone."
+        echo $(colorir amarelo "As a failsafe measure, we will add this session's IP ($FAILSAFE_USER_IP) to trusted zone.")
         iptables_purge_input_keep_failsafe 
     else
         echo "--- $(colorir vermelho "FAILSAFE IS DISABLED")"
@@ -538,20 +541,45 @@ function iptables_allow_port() {
     local regex_port_range="^[0-9]+-[0-9]+$"
     local regex_is_integer="^[0-9]+$"
 
+    # ##
+    # ## LEGACY PORT ITERATOR
+    # ##
+    #
+    # if [[ "$port" =~ $regex_port_range ]]; then
+    #     local start_port=$(echo "$port" | cut -d '-' -f 1)
+    #     local end_port=$(echo "$port" | cut -d '-' -f 2)
+    #     if ! [[ "$start_port" =~ $regex_is_integer && "$end_port" =~ $regex_is_integer ]]; then
+    #         echo "[$(colorir vermelho "✗")] $(colorir vermelho "$zone : $port/$type") (bad range)"
+    #         return 0
+    #     fi
+    #     if [[ "$start_port" -gt "$end_port" ]]; then
+    #         echo "[$(colorir vermelho "✗")] $(colorir vermelho "$zone : $port/$type") (bad range)"
+    #         return 0
+    #     fi
+    #     for i in $(seq $start_port $end_port); do
+    #         iptables_allow_port "$i" "$type"
+    #     done
+    #     return 0
+    # fi
+
     if [[ "$port" =~ $regex_port_range ]]; then
         local start_port=$(echo "$port" | cut -d '-' -f 1)
         local end_port=$(echo "$port" | cut -d '-' -f 2)
+
         if ! [[ "$start_port" =~ $regex_is_integer && "$end_port" =~ $regex_is_integer ]]; then
             echo "[$(colorir vermelho "✗")] $(colorir vermelho "$zone : $port/$type") (bad range)"
             return 0
         fi
+
         if [[ "$start_port" -gt "$end_port" ]]; then
             echo "[$(colorir vermelho "✗")] $(colorir vermelho "$zone : $port/$type") (bad range)"
             return 0
         fi
-        for i in $(seq $start_port $end_port); do
-            iptables_allow_port "$i" "$type"
-        done
+
+        srun "iptables -A $zone -p $type --destination-port $start_port:$end_port -j ACCEPT"
+
+        echo "[$(colorir verde "🗸")] $(colorir verde "$zone : $port/$type") (allowed range)"
+
         return 0
     fi
 
@@ -619,7 +647,7 @@ function firewalld_engine() {
     srun "sudo systemctl stop fail2ban"
     srun "sudo systemctl disable fail2ban"
 
-    # 1.5. make sure our engine is working/running. this is already done in other parts of the script
+    # 1.5. make sure our engine is working/running
 
     # 2. Create/confirm zones
     echo "--- CHECKING ZONES, MIGHT TAKE A WHILE"
@@ -632,29 +660,35 @@ function firewalld_engine() {
     done
 
     # 4. Create drops or set up allowlist
-    if $PORT_ALLOWLIST_MODE; then
-        echo "--- PORT ALLOWLIST (drop all, allow only specific ports)"
-        for port_type in "${PORTS_TO_ALLOW[@]}"; do
-            local _port=""
-            local _type=""
-
-            IFS="/" read -r _port _type <<< "$port_type"
-            firewalld_allow_port "$_port" "$_type"
-
-            unset IFS
-        done
-    else
+    if $PORT_DROP_MODE; then
+        # LEGACY: only drop whatever came from "drops" file or commandline
         echo "--- PORT DROPS"
+
         for port_type_force in "${PORTS_TO_DROP[@]}"; do
             local _port=""
             local _type=""
             local _force=false
 
-            IFS=":" read -r port_type _force <<< "${port_type_force}" # isolate force option
-            IFS="/" read -r _port _type <<< "$port_type" # separate remainder as port and type
-            if [[ "$_force" == "force" || "$_force" == "true" ]]; then _force=true; fi
+            IFS=":" read -r port_type _force <<< "$port_type_force"
+            IFS="/" read -r _port _type <<< "$port_type"
+
+            [[ "$_force" == "force" || "$_force" == "true" ]] && _force=true
 
             firewalld_drop_port "$_port" "$_type" "$_force"
+
+            unset IFS
+        done
+    else
+        # NEW: drop all, allow only specific ports
+        echo "--- PORT ALLOWLIST (drop all, allow only specific ports)"
+
+        for port_type in "${PORTS_TO_ALLOW[@]}"; do
+            local _port=""
+            local _type=""
+
+            IFS="/" read -r _port _type <<< "$port_type"
+
+            firewalld_allow_port "$_port" "$_type"
 
             unset IFS
         done
@@ -827,7 +861,7 @@ function firewalld_do_zone_stuff() {
 
     # failsafe
     if ! $IGNORE_FAILSAFE; then
-        $VERBOSE && echo "VERBOSE: As a failsafe measure, we will add this session's IP ($FAILSAFE_USER_IP) to trusted zone."
+         echo $(colorir amarelo "As a failsafe measure, we will add this session's IP ($FAILSAFE_USER_IP) to trusted zone.")
         firewalld_add_trusted "$FAILSAFE_USER_IP" trusted
     else
         echo "--- $(colorir vermelho "FAILSAFE MODE IS DISABLED")"
@@ -988,20 +1022,49 @@ function firewalld_allow_port() {
     local regex_port_range="^[0-9]+-[0-9]+$"
     local regex_is_integer="^[0-9]+$"
 
+    # ##
+    # ## LEGAL PORT RANGE ITERATOR
+    # ##
+    #
+    # if [[ "$port" =~ $regex_port_range ]]; then
+    #     local start_port=$(echo "$port" | cut -d '-' -f 1)
+    #     local end_port=$(echo "$port" | cut -d '-' -f 2)
+    #     if ! [[ "$start_port" =~ $regex_is_integer && "$end_port" =~ $regex_is_integer ]]; then
+    #         echo "[$(colorir vermelho "✗")] $(colorir vermelho "$zone : $port/$type") (bad range)"
+    #         return 0
+    #     fi
+    #     if [[ "$start_port" -gt "$end_port" ]]; then
+    #         echo "[$(colorir vermelho "✗")] $(colorir vermelho "$zone : $port/$type") (bad range)"
+    #         return 0
+    #     fi
+    #     for i in $(seq $start_port $end_port); do
+    #         firewalld_allow_port "$i" "$type"
+    #     done
+    #     return 0
+    # fi
+
     if [[ "$port" =~ $regex_port_range ]]; then
         local start_port=$(echo "$port" | cut -d '-' -f 1)
         local end_port=$(echo "$port" | cut -d '-' -f 2)
+
         if ! [[ "$start_port" =~ $regex_is_integer && "$end_port" =~ $regex_is_integer ]]; then
             echo "[$(colorir vermelho "✗")] $(colorir vermelho "$zone : $port/$type") (bad range)"
             return 0
         fi
+
         if [[ "$start_port" -gt "$end_port" ]]; then
             echo "[$(colorir vermelho "✗")] $(colorir vermelho "$zone : $port/$type") (bad range)"
             return 0
         fi
-        for i in $(seq $start_port $end_port); do
-            firewalld_allow_port "$i" "$type"
-        done
+
+        if ! $FIREWALLD_IS_RUNNING; then
+            firewalld_check_status
+        fi
+
+        srun "firewall-cmd --zone=$zone --add-port=$port/$type --permanent"
+
+        echo "[$(colorir verde "🗸")] $(colorir verde "$zone : $port/$type") (allowed range)"
+
         return 0
     fi
 
