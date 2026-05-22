@@ -1,0 +1,12 @@
+# Ports to allow when running with --port-allowlist (-pa)
+# Format: port/type (e.g. 22/tcp, 443/tcp, 8080/udp)
+# Ranges supported: 20-23/tcp
+# If type is omitted, both tcp and udp are allowed
+
+# SIP signaling
+5060/udp
+5060/tcp
+5061/tcp
+
+# RTP media (audio/video)
+10000-20000/udp

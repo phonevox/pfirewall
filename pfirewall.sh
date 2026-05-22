@@ -9,7 +9,7 @@ REPO_OWNER="phonevox"
 REPO_NAME="pfirewall"
 REPO_URL="https://github.com/$REPO_OWNER/$REPO_NAME"
 ZIP_URL="$REPO_URL/archive/refs/heads/main.zip"
-APP_VERSION="v0.4.3" # honestly, I dont know how to do this better
+APP_VERSION="v0.5.0" # honestly, I dont know how to do this better
 
 source $CURRDIR/lib/useful.sh
 source $CURRDIR/lib/easyflags.sh
@@ -30,6 +30,7 @@ add_flag "t:HIDDEN" "test" "DEBUGGING TOOL" bool # runs function run_test() and 
 add_flag "upd:HIDDEN" "update" "Update this script to the newest version" bool
 add_flag "fu:HIDDEN" "force-update" "Force the update even if its in the same version" bool
 add_flag "e" "engine" "Firewall engine to use. Defaults as firewalld (firewalld|iptables)" str
+add_flag "pa" "port-allowlist" "Drop ALL ports, only allowing ports from 'port_allow' file" bool
 
 #ignores
 add_flag "idp:HIDDEN" "ignore-default-ports" "Do NOT use values from 'drops' file" bool
@@ -53,6 +54,7 @@ UPDATE=false # update this script to the newest version
 FORCE_UPDATE=false # force update even if its the same version
 TEST_RUN=false
 FLUSH_ZONES=true # flush all rules added from this script (default: true)
+PORT_ALLOWLIST_MODE=false # drop all ports, allow only ports from port_allow file (default: false)
 
 # zone-related
 TRUST_ZONE_NAME="ptrusted"
@@ -85,6 +87,14 @@ while IFS= read -r line; do
     fi
 done <<< "$(read_stdin "$CURRDIR/drops")" 2>&1
 
+DEFAULT_ALLOWED_PORTS=()
+while IFS= read -r line; do
+    if [[ -n "$line" ]]; then
+        $VERBOSE && echo "VERBOSE: DEFAULT_ALLOWED_PORTS : stdin: $line"
+        DEFAULT_ALLOWED_PORTS+=("$line")
+    fi
+done <<< "$(read_stdin "$CURRDIR/port_allow")" 2>&1
+
 FIREWALLD_IS_ENABLED=false
 FIREWALLD_IS_RUNNING=false
 if hasFlag "d"; then DRY=true; fi
@@ -95,6 +105,7 @@ if hasFlag "t"; then TEST_RUN=true; fi
 if hasFlag "e"; then ENGINE=$(getFlag "e"); fi
 if hasFlag "fu"; then FORCE_UPDATE=true; fi
 if hasFlag "nf"; then FLUSH_ZONES=false; fi
+if hasFlag "pa"; then PORT_ALLOWLIST_MODE=true; fi
 if hasFlag "upd"; then UPDATE=true; fi
 if hasFlag "ifs"; then IGNORE_FAILSAFE=true; fi
 if hasFlag "idp"; then DEFAULT_DROP_PORTS=(); fi
@@ -132,6 +143,8 @@ if hasFlag "p"; then
     unset IFS
 fi
 PORTS_TO_DROP+=("${DEFAULT_DROP_PORTS[@]}")
+
+PORTS_TO_ALLOW=("${DEFAULT_ALLOWED_PORTS[@]}")
 
 # obtaining user IPs from stdin (if any)
 # read_stdin comes from lib/useful.sh
@@ -173,21 +186,35 @@ function iptables_engine() {
         iptables_add_trusted "$ip"
     done
 
-    # 4. Add the drops (block ports)
-    echo "--- PORT DROPS"
-    for port_type_force in "${PORTS_TO_DROP[@]}"; do
-        local _port=""
-        local _type=""
-        local _force=false
+    # 4. Add the drops (block ports) or set up allowlist
+    if $PORT_ALLOWLIST_MODE; then
+        echo "--- PORT ALLOWLIST (drop all, allow only specific ports)"
+        for port_type in "${PORTS_TO_ALLOW[@]}"; do
+            local _port=""
+            local _type=""
 
-        IFS=":" read -r port_type _force <<< "${port_type_force}" # isolate force option
-        IFS="/" read -r _port _type <<< "$port_type" # separate remainder as port and type
-        if [[ "$_force" == "force" || "$_force" == "true" ]]; then _force=true; fi
+            IFS="/" read -r _port _type <<< "$port_type"
+            iptables_allow_port "$_port" "$_type"
 
-        iptables_drop_port "$_port" "$_type" "$_force"
+            unset IFS
+        done
+        srun "iptables -A $DROP_ZONE_NAME -j DROP"
+    else
+        echo "--- PORT DROPS"
+        for port_type_force in "${PORTS_TO_DROP[@]}"; do
+            local _port=""
+            local _type=""
+            local _force=false
 
-        unset IFS
-    done
+            IFS=":" read -r port_type _force <<< "${port_type_force}" # isolate force option
+            IFS="/" read -r _port _type <<< "$port_type" # separate remainder as port and type
+            if [[ "$_force" == "force" || "$_force" == "true" ]]; then _force=true; fi
+
+            iptables_drop_port "$_port" "$_type" "$_force"
+
+            unset IFS
+        done
+    fi
 
     # 5. Reload to apply (? not necessary in iptables?)
     echo "--- ALL DONE!"
@@ -486,6 +513,59 @@ function iptables_drop_port() {
 }
 
 
+function iptables_allow_port() {
+    local port=$1
+    local type=$2
+    local zone=$DROP_ZONE_NAME
+
+    if [ -z "$port" ]; then
+        echo "Error: No port argument sent for allow."
+        return 1
+    fi
+
+    if [ -z "$type" ]; then
+        $VERBOSE && echo "VERBOSE: Type not set, allowing udp and tcp"
+        iptables_allow_port "$port" tcp
+        iptables_allow_port "$port" udp
+        return 0
+    else
+        if ! [[ "$type" =~ ^(tcp|udp|icmp|sctp|dccp|gre|ah|esp)$ ]]; then
+            echo "[$(colorir vermelho "✗")] $(colorir vermelho "$zone : $port/$type") (bad type)"
+            return 0
+        fi
+    fi
+
+    local regex_port_range="^[0-9]+-[0-9]+$"
+    local regex_is_integer="^[0-9]+$"
+
+    if [[ "$port" =~ $regex_port_range ]]; then
+        local start_port=$(echo "$port" | cut -d '-' -f 1)
+        local end_port=$(echo "$port" | cut -d '-' -f 2)
+        if ! [[ "$start_port" =~ $regex_is_integer && "$end_port" =~ $regex_is_integer ]]; then
+            echo "[$(colorir vermelho "✗")] $(colorir vermelho "$zone : $port/$type") (bad range)"
+            return 0
+        fi
+        if [[ "$start_port" -gt "$end_port" ]]; then
+            echo "[$(colorir vermelho "✗")] $(colorir vermelho "$zone : $port/$type") (bad range)"
+            return 0
+        fi
+        for i in $(seq $start_port $end_port); do
+            iptables_allow_port "$i" "$type"
+        done
+        return 0
+    fi
+
+    if ! [[ "$port" =~ $regex_is_integer ]]; then
+        echo "[$(colorir vermelho "✗")] $(colorir vermelho "$port/$type") (bad port)"
+        return 0
+    fi
+
+    srun "iptables -A $zone -p $type --destination-port $port -j ACCEPT"
+    echo "[$(colorir verde "🗸")] $(colorir verde "$zone : $port/$type") (allowed)"
+    return 0
+}
+
+
 function iptables_list_configuration() {
     srun "iptables -S"
     exit 0
@@ -551,21 +631,34 @@ function firewalld_engine() {
         firewalld_add_trusted "$ip"
     done
 
-    # 4. Create drops
-    echo "--- PORT DROPS"
-    for port_type_force in "${PORTS_TO_DROP[@]}"; do
-        local _port=""
-        local _type=""
-        local _force=false
+    # 4. Create drops or set up allowlist
+    if $PORT_ALLOWLIST_MODE; then
+        echo "--- PORT ALLOWLIST (drop all, allow only specific ports)"
+        for port_type in "${PORTS_TO_ALLOW[@]}"; do
+            local _port=""
+            local _type=""
 
-        IFS=":" read -r port_type _force <<< "${port_type_force}" # isolate force option
-        IFS="/" read -r _port _type <<< "$port_type" # separate remainder as port and type
-        if [[ "$_force" == "force" || "$_force" == "true" ]]; then _force=true; fi
+            IFS="/" read -r _port _type <<< "$port_type"
+            firewalld_allow_port "$_port" "$_type"
 
-        firewalld_drop_port "$_port" "$_type" "$_force"
+            unset IFS
+        done
+    else
+        echo "--- PORT DROPS"
+        for port_type_force in "${PORTS_TO_DROP[@]}"; do
+            local _port=""
+            local _type=""
+            local _force=false
 
-        unset IFS
-    done
+            IFS=":" read -r port_type _force <<< "${port_type_force}" # isolate force option
+            IFS="/" read -r _port _type <<< "$port_type" # separate remainder as port and type
+            if [[ "$_force" == "force" || "$_force" == "true" ]]; then _force=true; fi
+
+            firewalld_drop_port "$_port" "$_type" "$_force"
+
+            unset IFS
+        done
+    fi
 
     # 5. Reload to apply changes
     echo "--- RELOADING FIREWALLD TO APPLY CHANGES ---"
@@ -750,8 +843,10 @@ function firewalld_do_zone_stuff() {
     fi
 
     # create zones
+    local _drop_zone_target="ACCEPT"
+    if $PORT_ALLOWLIST_MODE; then _drop_zone_target="DROP"; fi
     firewalld_guarantee_zone "$TRUST_ZONE_NAME" "ACCEPT"
-    firewalld_guarantee_zone "$DROP_ZONE_NAME" "ACCEPT"
+    firewalld_guarantee_zone "$DROP_ZONE_NAME" "$_drop_zone_target"
     
     # apply
     firewalld_reload
@@ -864,6 +959,61 @@ function firewalld_drop_port() {
     fi
 
     echo  "$_text_message"
+    return 0
+}
+
+
+function firewalld_allow_port() {
+    local port=$1
+    local type=$2
+    local zone=$DROP_ZONE_NAME
+
+    if [ -z "$port" ]; then
+        echo "Error: No port argument sent for allow."
+        return 1
+    fi
+
+    if [ -z "$type" ]; then
+        $VERBOSE && echo "VERBOSE: Type not set, allowing udp and tcp"
+        firewalld_allow_port "$port" tcp
+        firewalld_allow_port "$port" udp
+        return 0
+    else
+        if ! [[ "$type" =~ ^(tcp|udp|icmp|sctp|dccp|gre|ah|esp)$ ]]; then
+            echo "[$(colorir vermelho "✗")] $(colorir vermelho "$zone : $port/$type") (bad type)"
+            return 0
+        fi
+    fi
+
+    local regex_port_range="^[0-9]+-[0-9]+$"
+    local regex_is_integer="^[0-9]+$"
+
+    if [[ "$port" =~ $regex_port_range ]]; then
+        local start_port=$(echo "$port" | cut -d '-' -f 1)
+        local end_port=$(echo "$port" | cut -d '-' -f 2)
+        if ! [[ "$start_port" =~ $regex_is_integer && "$end_port" =~ $regex_is_integer ]]; then
+            echo "[$(colorir vermelho "✗")] $(colorir vermelho "$zone : $port/$type") (bad range)"
+            return 0
+        fi
+        if [[ "$start_port" -gt "$end_port" ]]; then
+            echo "[$(colorir vermelho "✗")] $(colorir vermelho "$zone : $port/$type") (bad range)"
+            return 0
+        fi
+        for i in $(seq $start_port $end_port); do
+            firewalld_allow_port "$i" "$type"
+        done
+        return 0
+    fi
+
+    if ! [[ "$port" =~ $regex_is_integer ]]; then
+        echo "[$(colorir vermelho "✗")] $(colorir vermelho "$port/$type") (bad port)"
+        return 0
+    fi
+
+    if ! $FIREWALLD_IS_RUNNING; then firewalld_check_status; fi
+
+    srun "firewall-cmd --zone=$zone --add-rich-rule='rule family=\"ipv4\" port port=\"$port\" protocol=\"$type\" accept' --permanent"
+    echo "[$(colorir verde "🗸")] $(colorir verde "$zone : $port/$type") (allowed)"
     return 0
 }
 
