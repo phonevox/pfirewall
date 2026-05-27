@@ -8,5 +8,8 @@
 5060/tcp
 5061/tcp
 
+# Phonevox Default SIP port
+50007/tcp
+
 # RTP media (audio/video)
 10000-20000/udp
