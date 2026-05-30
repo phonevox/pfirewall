@@ -249,6 +249,11 @@ function iptables_do_zone_stuff() {
         echo "--- $(colorir vermelho "ZONE FLUSHING IS DISABLED")"
     fi
 
+    # Regras base antes de criar as jails
+    srun "iptables -I INPUT 1 -i lo -j ACCEPT"
+    srun "iptables -I INPUT 2 -m state --state ESTABLISHED,RELATED -j ACCEPT"
+    srun "iptables -I INPUT 3 -p icmp -j ACCEPT"
+
     # create
     iptables_guarantee_jail "$TRUST_ZONE_NAME"
     iptables_guarantee_jail "$DROP_ZONE_NAME"
